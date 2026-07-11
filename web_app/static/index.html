@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>7501 Tax Bill Tool</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">7501</div>
+          <div>
+            <h1>税单调整工作台</h1>
+            <p>CBP 7501</p>
+          </div>
+        </div>
+
+        <form id="upload-form" class="upload-panel">
+          <label class="file-drop" for="pdf-file">
+            <input id="pdf-file" name="file" type="file" accept="application/pdf,.pdf" />
+            <span class="file-icon" aria-hidden="true"></span>
+            <span id="file-name">选择 PDF</span>
+          </label>
+          <button id="parse-button" type="submit">解析</button>
+        </form>
+
+        <section class="control-group">
+          <label class="switch-row">
+            <input id="include-hmf" type="checkbox" />
+            <span>HMF</span>
+          </label>
+          <button id="recalculate-button" type="button">重新计算</button>
+          <button id="download-json-button" type="button">导出 JSON</button>
+        </section>
+
+        <section class="status-panel" aria-live="polite">
+          <div id="status-text">待上传</div>
+          <div id="warning-list"></div>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <section class="summary-strip" id="summary-strip">
+          <div>
+            <span>Entry</span>
+            <strong id="entry-number">-</strong>
+          </div>
+          <div>
+            <span>Lines</span>
+            <strong id="line-count">0</strong>
+          </div>
+          <div>
+            <span>Entered</span>
+            <strong id="entered-total">-</strong>
+          </div>
+          <div>
+            <span>Duty</span>
+            <strong id="duty-total">-</strong>
+          </div>
+          <div>
+            <span>Other</span>
+            <strong id="other-total">-</strong>
+          </div>
+          <div>
+            <span>Total</span>
+            <strong id="grand-total">-</strong>
+          </div>
+        </section>
+
+        <section class="document-panel">
+          <div class="panel-head">
+            <h2>单据摘要</h2>
+            <span id="source-file">-</span>
+          </div>
+          <div class="field-grid" id="field-grid"></div>
+        </section>
+
+        <section class="line-panel">
+          <div class="panel-head">
+            <h2>行项目</h2>
+            <span id="table-note">0 rows</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Line</th>
+                  <th>Description</th>
+                  <th>HTS</th>
+                  <th>Entered Value</th>
+                  <th>Rate</th>
+                  <th>Duty</th>
+                  <th>MPF</th>
+                  <th>HMF</th>
+                  <th>Variance</th>
+                </tr>
+              </thead>
+              <tbody id="line-table-body">
+                <tr class="empty-row">
+                  <td colspan="9">暂无数据</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

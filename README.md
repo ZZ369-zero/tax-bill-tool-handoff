@@ -17,6 +17,31 @@ The parser does not modify any source PDF files.
 
 ## Run
 
+### Web app
+
+```powershell
+python -m pip install -r requirements.txt
+python -m uvicorn web_app.app:app --host 127.0.0.1 --port 8000
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000/
+```
+
+Current web flow:
+
+1. Upload one CBP 7501 PDF.
+2. Parse document header fields and line items.
+3. Edit line-item entered value or rate in the browser.
+4. Recalculate duty, MPF, optional HMF, and document totals.
+5. Export the working JSON for review.
+
+Uploaded PDFs are stored under `uploads/`, which is ignored by git.
+
+### Batch parser
+
 ```powershell
 python .\tools\7501_parser.py --input "C:\Users\Administrator\Desktop\事项\7501" --output .\output
 ```
