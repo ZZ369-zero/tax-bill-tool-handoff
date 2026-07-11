@@ -2,6 +2,8 @@ const state = {
   document: null,
   lines: [],
   includeHmf: false,
+  uploadId: null,
+  transportMode: "auto",
   recalcTimer: null,
 };
 
@@ -11,6 +13,7 @@ const els = {
   fileName: document.querySelector("#file-name"),
   parseButton: document.querySelector("#parse-button"),
   includeHmf: document.querySelector("#include-hmf"),
+  modeButtons: Array.from(document.querySelectorAll(".mode-button")),
   recalculateButton: document.querySelector("#recalculate-button"),
   generatePdfButton: document.querySelector("#generate-pdf-button"),
   downloadJsonButton: document.querySelector("#download-json-button"),
@@ -79,7 +82,10 @@ function applyPayload(payload) {
   state.document = payload.document;
   state.lines = payload.lines || [];
   state.includeHmf = Boolean(payload.include_hmf);
+  state.uploadId = payload.upload_id || state.uploadId;
+  state.transportMode = payload.transport_mode || state.transportMode || "auto";
   els.includeHmf.checked = state.includeHmf;
+  renderModeButtons();
   render();
 }
 
@@ -160,6 +166,25 @@ function scheduleRecalculate() {
   }, 280);
 }
 
+function setTransportMode(mode) {
+  state.transportMode = mode;
+  if (mode === "ocean") {
+    state.includeHmf = true;
+  }
+  if (mode === "air") {
+    state.includeHmf = false;
+  }
+  els.includeHmf.checked = state.includeHmf;
+  renderModeButtons();
+  scheduleRecalculate();
+}
+
+function renderModeButtons() {
+  for (const button of els.modeButtons) {
+    button.classList.toggle("active", button.dataset.mode === state.transportMode);
+  }
+}
+
 async function parseUpload(event) {
   event.preventDefault();
   const file = els.fileInput.files[0];
@@ -216,6 +241,8 @@ function currentPayload() {
     document: state.document,
     lines: state.lines,
     include_hmf: state.includeHmf,
+    upload_id: state.uploadId,
+    transport_mode: state.transportMode,
   };
 }
 
@@ -292,8 +319,17 @@ els.fileInput.addEventListener("change", () => {
 });
 
 els.uploadForm.addEventListener("submit", parseUpload);
+for (const button of els.modeButtons) {
+  button.addEventListener("click", () => setTransportMode(button.dataset.mode));
+}
 els.includeHmf.addEventListener("change", () => {
   state.includeHmf = els.includeHmf.checked;
+  if (state.includeHmf) {
+    state.transportMode = "ocean";
+  } else if (state.transportMode === "ocean") {
+    state.transportMode = "air";
+  }
+  renderModeButtons();
   scheduleRecalculate();
 });
 els.recalculateButton.addEventListener("click", recalculate);

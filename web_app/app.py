@@ -5,7 +5,6 @@ from io import BytesIO
 import shutil
 import sys
 from dataclasses import asdict, fields, is_dataclass
-from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -14,9 +13,9 @@ from uuid import uuid4
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pypdf import PdfReader, PdfWriter
 from pydantic import BaseModel
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
 
@@ -45,6 +44,8 @@ class RecalculateRequest(BaseModel):
     document: dict[str, Any]
     lines: list[dict[str, Any]]
     include_hmf: bool = False
+    upload_id: str | None = None
+    transport_mode: str = "auto"
 
 
 class GeneratePdfRequest(RecalculateRequest):
@@ -157,11 +158,20 @@ def recalculate(document: Any, lines: list[Any], *, include_hmf: bool) -> None:
     )
 
 
-def response_payload(document: Any, lines: list[Any], *, include_hmf: bool) -> dict[str, Any]:
+def response_payload(
+    document: Any,
+    lines: list[Any],
+    *,
+    include_hmf: bool,
+    upload_id: str | None = None,
+    transport_mode: str = "auto",
+) -> dict[str, Any]:
     return {
         "document": asdict(document),
         "lines": [asdict(line) for line in lines],
         "include_hmf": include_hmf,
+        "upload_id": upload_id,
+        "transport_mode": transport_mode,
         "summary": {
             "line_count": len(lines),
             "has_text_layer": document.has_text_layer,
@@ -177,6 +187,22 @@ def safe_upload_name(filename: str) -> str:
     return f"{uuid4().hex}{suffix}"
 
 
+def upload_path(upload_id: str | None) -> Path:
+    if not upload_id:
+        raise HTTPException(status_code=400, detail="Please upload and parse the original PDF again.")
+    path = UPLOAD_DIR / Path(upload_id).name
+    try:
+        resolved = path.resolve()
+        upload_root = UPLOAD_DIR.resolve()
+    except FileNotFoundError:
+        raise HTTPException(status_code=400, detail="Original uploaded PDF was not found.") from None
+    if upload_root not in resolved.parents and resolved != upload_root:
+        raise HTTPException(status_code=400, detail="Invalid upload reference.")
+    if not resolved.exists():
+        raise HTTPException(status_code=400, detail="Original uploaded PDF was not found.")
+    return resolved
+
+
 def display(value: Any) -> str:
     if value is None:
         return ""
@@ -190,164 +216,167 @@ def clean_filename(value: str | None) -> str:
     return safe or "7501-adjusted"
 
 
-def trim_text(value: Any, max_chars: int) -> str:
-    text = display(value).replace("\n", " ").strip()
-    if len(text) <= max_chars:
-        return text
-    return text[: max_chars - 1] + "*"
+def format_pdf_money(value: Any, *, keep_cents: bool = True) -> str:
+    decimal_value = parser.parse_decimal(value)
+    if decimal_value is None:
+        return display(value)
+    if keep_cents or decimal_value != decimal_value.to_integral_value():
+        return f"${decimal_value:,.2f}"
+    return f"${decimal_value:,.0f}"
 
 
-def split_text(value: Any, max_chars: int, max_lines: int) -> list[str]:
-    words = display(value).replace("\n", " ").split()
-    lines: list[str] = []
-    current = ""
-    for word in words:
-        candidate = f"{current} {word}".strip()
-        if len(candidate) <= max_chars:
-            current = candidate
-            continue
-        if current:
-            lines.append(current)
-        current = word[:max_chars]
-        if len(lines) >= max_lines:
-            break
-    if current and len(lines) < max_lines:
-        lines.append(current)
-    if len(lines) == max_lines and len(" ".join(words)) > len(" ".join(lines)):
-        lines[-1] = trim_text(lines[-1], max_chars)
-    return lines or [""]
-
-
-def money_value(*values: Any) -> str:
-    for value in values:
-        if value not in (None, ""):
-            return str(value)
-    return ""
-
-
-def draw_box(c: canvas.Canvas, x: float, y: float, w: float, h: float, label: str, value: Any) -> None:
-    c.setStrokeColor(colors.black)
-    c.rect(x, y, w, h, stroke=1, fill=0)
-    c.setFont("Helvetica", 6)
-    c.drawString(x + 3, y + h - 8, label)
-    c.setFont("Helvetica-Bold", 8)
-    c.drawString(x + 3, y + 5, trim_text(value, max(8, int(w / 4.4))))
-
-
-def draw_right(c: canvas.Canvas, text: Any, x: float, y: float, w: float) -> None:
-    c.drawRightString(x + w - 3, y, trim_text(text, max(8, int(w / 4.8))))
-
-
-def draw_pdf_header(c: canvas.Canvas, document: Any, page_no: int, page_count: int) -> None:
-    c.setTitle("7501 Internal Adjustment Copy")
-    c.setFont("Helvetica-Bold", 13)
-    c.drawString(24, 762, "CBP Form 7501 - Internal Adjustment Copy")
-    c.setFont("Helvetica", 7)
-    c.drawRightString(588, 764, f"Generated {date.today().isoformat()}  Page {page_no} of {page_count}")
-    c.drawString(24, 750, "For internal reconciliation only. Review before any official filing or customer release.")
-
-    top = 714
-    row_h = 28
-    col_w = 94
-    fields_row_1 = [
-        ("Entry Number", document.entry_number),
-        ("Entry Type", document.entry_type),
-        ("Summary Date", document.summary_date),
-        ("Port Code", document.port_code),
-        ("Entry Date", document.entry_date),
-        ("Import Date", document.import_date),
-    ]
-    for index, (label, value) in enumerate(fields_row_1):
-        draw_box(c, 24 + index * col_w, top, col_w, row_h, label, value)
-
-    fields_row_2 = [
-        ("Mode", document.mode_of_transport),
-        ("Origin", document.country_of_origin),
-        ("B/L or AWB", document.bl_or_awb_number),
-        ("Manufacturer ID", document.manufacturer_id),
-        ("Exporting Country", document.exporting_country),
-        ("Invoice", document.invoice_number),
-    ]
-    for index, (label, value) in enumerate(fields_row_2):
-        draw_box(c, 24 + index * col_w, top - row_h, col_w, row_h, label, value)
-
-
-def draw_table_header(c: canvas.Canvas, y: float) -> None:
-    headers = [
-        ("Line", 24, 32),
-        ("Description", 56, 142),
-        ("HTS", 198, 76),
-        ("Entered", 274, 66),
-        ("Rate", 340, 80),
-        ("Duty", 420, 54),
-        ("MPF", 474, 52),
-        ("HMF", 526, 52),
-    ]
-    c.setFillColor(colors.HexColor("#eef2f6"))
-    c.rect(24, y - 14, 554, 18, stroke=0, fill=1)
+def draw_replacement(c: canvas.Canvas, x: float, y: float, w: float, h: float, value: Any) -> None:
+    c.setFillColor(colors.white)
+    c.setStrokeColor(colors.white)
+    c.rect(x, y - 2, w, h, stroke=0, fill=1)
     c.setFillColor(colors.black)
-    c.setStrokeColor(colors.black)
-    c.line(24, y - 14, 578, y - 14)
-    c.setFont("Helvetica-Bold", 7)
-    for label, x, _ in headers:
-        c.drawString(x + 3, y - 8, label)
+    c.setFont("Helvetica", 9)
+    c.drawRightString(x + w - 1, y, display(value))
 
 
-def draw_line_row(c: canvas.Canvas, line: Any, y: float) -> None:
-    c.setFont("Helvetica", 7)
-    c.drawString(27, y, trim_text(line.line_no, 5))
-    desc_lines = split_text(line.description, 34, 2)
-    c.drawString(59, y, desc_lines[0])
-    if len(desc_lines) > 1:
-        c.drawString(59, y - 9, desc_lines[1])
-    c.drawString(201, y, trim_text(line.hts, 17))
-    c.drawRightString(337, y, money_value(line.entered_value))
-    c.drawString(343, y, trim_text(line.rate, 18))
-    draw_right(c, money_value(line.calculated_duty_total, line.duty_amount), 420, y, 54)
-    draw_right(c, money_value(line.calculated_mpf_amount, line.mpf_amount), 474, y, 52)
-    draw_right(c, money_value(line.calculated_hmf_amount, line.hmf_amount), 526, y, 52)
-    c.setStrokeColor(colors.HexColor("#d9e1ea"))
-    c.line(24, y - 13, 578, y - 13)
+def group_rows(fragments: list[Any], page: int) -> dict[int, list[Any]]:
+    rows: dict[int, list[Any]] = {}
+    for fragment in fragments:
+        if fragment.page != page or fragment.size < 8.0:
+            continue
+        rows.setdefault(round(fragment.y), []).append(fragment)
+    return {key: sorted(value, key=lambda item: item.x) for key, value in rows.items()}
 
 
-def draw_totals(c: canvas.Canvas, document: Any, y: float) -> None:
-    c.setStrokeColor(colors.black)
-    c.setFont("Helvetica-Bold", 8)
-    c.drawRightString(438, y, "Total Entered Value")
-    c.drawRightString(578, y, money_value(document.total_entered_value))
-    c.drawRightString(438, y - 15, "Duty")
-    c.drawRightString(578, y - 15, money_value(document.calculated_duty_total, document.duty_total))
-    c.drawRightString(438, y - 30, "Other Fees")
-    c.drawRightString(578, y - 30, money_value(document.calculated_other_total, document.other_total))
-    c.drawRightString(438, y - 45, "Grand Total")
-    c.drawRightString(578, y - 45, money_value(document.calculated_grand_total, document.grand_total))
-    c.line(450, y - 36, 578, y - 36)
+def row_text(row: list[Any]) -> str:
+    return parser.normalize_spaces(" ".join(fragment.text.strip() for fragment in row))
 
 
-def generate_adjusted_pdf(document: Any, lines: list[Any]) -> bytes:
-    buffer = BytesIO()
-    c = canvas.Canvas(buffer, pagesize=letter)
-    rows_per_page = 28
-    line_pages = max(1, (len(lines) + rows_per_page - 1) // rows_per_page)
-    page_count = line_pages
+def page_line_starts(fragments: list[Any]) -> list[Any]:
+    starts = [
+        fragment
+        for fragment in fragments
+        if 35 <= fragment.x <= 55
+        and parser.re.match(r"^\s*\d{3}(?:\s|$)", fragment.text.strip())
+        and not fragment.text.strip().startswith("499")
+        and fragment.y < parser.page_line_table_top(fragment.page)
+        and fragment.y > (280 if fragment.page == 1 else 40)
+    ]
+    return sorted(starts, key=lambda fragment: (fragment.page, -fragment.y))
 
-    for page_index in range(page_count):
-        draw_pdf_header(c, document, page_index + 1, page_count)
-        table_y = 646
-        draw_table_header(c, table_y)
-        start = page_index * rows_per_page
-        page_lines = lines[start : start + rows_per_page]
-        y = table_y - 31
-        for line in page_lines:
-            draw_line_row(c, line, y)
-            y -= 18
-        if page_index == page_count - 1:
-            draw_totals(c, document, 104)
-        c.showPage()
 
-    c.save()
-    buffer.seek(0)
-    return buffer.getvalue()
+def original_line_targets(original_path: Path) -> dict[tuple[int, str], dict[str, Any]]:
+    reader = PdfReader(str(original_path))
+    fragments = parser.extract_fragments(reader)
+    parsed = parser.parse_pdf(original_path, "original", f"upload|{original_path.stem}")
+    starts = page_line_starts(fragments)
+    targets: dict[tuple[int, str], dict[str, Any]] = {}
+
+    for index, start in enumerate(starts):
+        line_no = start.text.strip()[:3]
+        original_line = next(
+            (line for line in parsed.lines if line.page == start.page and line.line_no == line_no),
+            None,
+        )
+        if original_line is None:
+            continue
+        next_start = starts[index + 1] if index + 1 < len(starts) else None
+        y_low = 280.0 if start.page == 1 else 40.0
+        if next_start and next_start.page == start.page:
+            y_low = next_start.y + 1.0
+        rows = parser.rows_for_line(fragments, start.page, start.y, y_low)
+        hts_y = None
+        chapter_ys: list[float] = []
+        mpf_y = None
+        hmf_y = None
+        for row in rows:
+            text = row_text(row)
+            if original_line.hts and original_line.hts in text:
+                hts_y = row[0].y
+            if "Merchandise Processing Fee" in text:
+                mpf_y = row[0].y
+            if "Harbor Maintenance Fee" in text:
+                hmf_y = row[0].y
+            chapter_codes = [item.strip() for item in (original_line.chapter_99_codes or "").split(";") if item.strip()]
+            if any(code in text for code in chapter_codes):
+                chapter_ys.append(row[0].y)
+        targets[(start.page, line_no)] = {
+            "original": original_line,
+            "hts_y": hts_y,
+            "chapter_ys": chapter_ys,
+            "mpf_y": mpf_y,
+            "hmf_y": hmf_y,
+        }
+
+    return targets
+
+
+def calculated_chapter_amounts(line: Any) -> list[str]:
+    entered_value = parser.parse_decimal(line.entered_value)
+    if entered_value is None:
+        return []
+    amounts: list[str] = []
+    chapter_rates = [item.strip() for item in (line.chapter_99_rates or "").split(";") if item.strip()]
+    for rate_text in chapter_rates:
+        rate = parser.percent_to_decimal(rate_text)
+        if rate is None:
+            amounts.append("")
+            continue
+        amounts.append(parser.format_money(parser.money_round(entered_value * rate)) or "")
+    return amounts
+
+
+def draw_page_overlay(c: canvas.Canvas, document: Any, lines: list[Any], targets: dict[tuple[int, str], dict[str, Any]], page_number: int) -> None:
+    for line in lines:
+        if line.page != page_number or not line.line_no:
+            continue
+        target = targets.get((page_number, line.line_no))
+        if not target:
+            continue
+        hts_y = target.get("hts_y")
+        if hts_y:
+            draw_replacement(c, 330, hts_y, 64, 11, format_pdf_money(line.entered_value, keep_cents=False))
+            if line.calculated_base_duty:
+                draw_replacement(c, 536, hts_y, 43, 11, format_pdf_money(line.calculated_base_duty, keep_cents=True))
+        for amount, y in zip(calculated_chapter_amounts(line), target.get("chapter_ys") or []):
+            if amount:
+                draw_replacement(c, 536, y, 43, 11, format_pdf_money(amount, keep_cents=True))
+        if target.get("mpf_y") and line.calculated_mpf_amount:
+            draw_replacement(c, 536, target["mpf_y"], 43, 11, format_pdf_money(line.calculated_mpf_amount, keep_cents=True))
+        if target.get("hmf_y") and line.calculated_hmf_amount:
+            draw_replacement(c, 536, target["hmf_y"], 43, 11, format_pdf_money(line.calculated_hmf_amount, keep_cents=True))
+
+    if page_number == 1:
+        if document.total_entered_value:
+            draw_replacement(c, 175, 248, 78, 11, format_pdf_money(document.total_entered_value, keep_cents=False))
+        if document.calculated_duty_total:
+            draw_replacement(c, 536, 241.5, 43, 11, format_pdf_money(document.calculated_duty_total, keep_cents=True))
+        if document.calculated_other_total:
+            draw_replacement(c, 536, 197.5, 43, 11, format_pdf_money(document.calculated_other_total, keep_cents=True))
+        if document.calculated_grand_total:
+            draw_replacement(c, 536, 175.5, 43, 11, format_pdf_money(document.calculated_grand_total, keep_cents=True))
+
+
+def template_preserving_pdf(original_path: Path, document: Any, lines: list[Any]) -> bytes:
+    reader = PdfReader(str(original_path))
+    writer = PdfWriter()
+    targets = original_line_targets(original_path)
+
+    for page_index, page in enumerate(reader.pages, start=1):
+        width = float(page.mediabox.width)
+        height = float(page.mediabox.height)
+        buffer = BytesIO()
+        c = canvas.Canvas(buffer, pagesize=(width, height))
+        draw_page_overlay(c, document, lines, targets, page_index)
+        c.save()
+        buffer.seek(0)
+        overlay_reader = PdfReader(buffer)
+        page.merge_page(overlay_reader.pages[0])
+        writer.add_page(page)
+
+    output = BytesIO()
+    writer.write(output)
+    output.seek(0)
+    return output.getvalue()
+
+
+def generate_adjusted_pdf(original_path: Path, document: Any, lines: list[Any]) -> bytes:
+    return template_preserving_pdf(original_path, document, lines)
 
 
 @app.get("/")
@@ -377,7 +406,14 @@ async def parse_upload(file: UploadFile = File(...)) -> dict[str, Any]:
         parsed.document.source_file = file.filename
         for line in parsed.lines:
             line.source_file = file.filename
-        return response_payload(parsed.document, parsed.lines, include_hmf=include_hmf)
+        transport_mode = "ocean" if include_hmf else "auto"
+        return response_payload(
+            parsed.document,
+            parsed.lines,
+            include_hmf=include_hmf,
+            upload_id=saved_path.name,
+            transport_mode=transport_mode,
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -391,7 +427,13 @@ def recalculate_payload(payload: RecalculateRequest) -> dict[str, Any]:
         lines = [dataclass_from_dict(parser.TaxLine, line) for line in payload.lines]
         document.line_count = len(lines)
         recalculate(document, lines, include_hmf=payload.include_hmf)
-        return response_payload(document, lines, include_hmf=payload.include_hmf)
+        return response_payload(
+            document,
+            lines,
+            include_hmf=payload.include_hmf,
+            upload_id=payload.upload_id,
+            transport_mode=payload.transport_mode,
+        )
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Unable to recalculate: {exc}") from exc
 
@@ -403,7 +445,8 @@ def generate_pdf(payload: GeneratePdfRequest) -> StreamingResponse:
         lines = [dataclass_from_dict(parser.TaxLine, line) for line in payload.lines]
         document.line_count = len(lines)
         recalculate(document, lines, include_hmf=payload.include_hmf)
-        pdf_bytes = generate_adjusted_pdf(document, lines)
+        original_path = upload_path(payload.upload_id)
+        pdf_bytes = generate_adjusted_pdf(original_path, document, lines)
         filename = f"{clean_filename(document.source_file)}-adjusted-7501.pdf"
         return StreamingResponse(
             BytesIO(pdf_bytes),
