@@ -1,0 +1,21 @@
+# Generated reports and uploaded/user data
+output/
+uploads/
+*.pdf
+*.PDF
+*.xlsx
+*.xls
+*.csv
+*.rar
+*.zip
+
+# Python cache and local environment
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local/editor files
+.env
+.DS_Store
+Thumbs.db
