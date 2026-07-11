@@ -36,7 +36,8 @@ Current web flow:
 2. Parse document header fields and line items.
 3. Edit line-item entered value or rate in the browser.
 4. Recalculate duty, MPF, optional HMF, and document totals.
-5. Export the working JSON for review.
+5. Generate an updated internal 7501-style PDF.
+6. Optionally export the working JSON for troubleshooting or audit review.
 
 Uploaded PDFs are stored under `uploads/`, which is ignored by git.
 

@@ -47,6 +47,14 @@ button:disabled {
   opacity: 0.62;
 }
 
+.success-button {
+  background: var(--green);
+}
+
+.secondary-button {
+  background: #334155;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);

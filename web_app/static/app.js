@@ -12,6 +12,7 @@ const els = {
   parseButton: document.querySelector("#parse-button"),
   includeHmf: document.querySelector("#include-hmf"),
   recalculateButton: document.querySelector("#recalculate-button"),
+  generatePdfButton: document.querySelector("#generate-pdf-button"),
   downloadJsonButton: document.querySelector("#download-json-button"),
   statusText: document.querySelector("#status-text"),
   warningList: document.querySelector("#warning-list"),
@@ -53,6 +54,7 @@ function money(value) {
 function setBusy(isBusy, label = "处理中") {
   els.parseButton.disabled = isBusy;
   els.recalculateButton.disabled = isBusy || !state.document;
+  els.generatePdfButton.disabled = isBusy || !state.document;
   els.downloadJsonButton.disabled = isBusy || !state.document;
   if (isBusy) {
     els.statusText.textContent = label;
@@ -209,6 +211,44 @@ async function recalculate() {
   }
 }
 
+function currentPayload() {
+  return {
+    document: state.document,
+    lines: state.lines,
+    include_hmf: state.includeHmf,
+  };
+}
+
+async function generatePdf() {
+  if (!state.document) {
+    return;
+  }
+  window.clearTimeout(state.recalcTimer);
+  setBusy(true, "生成 PDF 中");
+  try {
+    const response = await fetch("/api/generate-pdf", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(currentPayload()),
+    });
+    if (!response.ok) {
+      throw new Error(await errorText(response));
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = pdfDownloadName();
+    link.click();
+    URL.revokeObjectURL(url);
+    setStatus("更新税单已生成", collectWarnings());
+  } catch (error) {
+    setStatus(error.message || "生成失败");
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function errorText(response) {
   try {
     const data = await response.json();
@@ -225,11 +265,7 @@ function downloadJson() {
   const blob = new Blob(
     [
       JSON.stringify(
-        {
-          document: state.document,
-          lines: state.lines,
-          include_hmf: state.includeHmf,
-        },
+        currentPayload(),
         null,
         2,
       ),
@@ -244,6 +280,12 @@ function downloadJson() {
   URL.revokeObjectURL(url);
 }
 
+function pdfDownloadName() {
+  const raw = state.document?.source_file || "7501";
+  const stem = raw.replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "-").replace(/-+/g, "-") || "7501";
+  return `${stem}-adjusted-7501.pdf`;
+}
+
 els.fileInput.addEventListener("change", () => {
   const file = els.fileInput.files[0];
   els.fileName.textContent = file ? file.name : "选择 PDF";
@@ -255,6 +297,7 @@ els.includeHmf.addEventListener("change", () => {
   scheduleRecalculate();
 });
 els.recalculateButton.addEventListener("click", recalculate);
+els.generatePdfButton.addEventListener("click", generatePdf);
 els.downloadJsonButton.addEventListener("click", downloadJson);
 els.lineTableBody.addEventListener("input", (event) => {
   const target = event.target;
