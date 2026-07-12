@@ -1,28 +1,37 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
 from io import BytesIO
+import os
+import secrets
 import shutil
 import sys
-from dataclasses import asdict, fields, is_dataclass
+from dataclasses import asdict, dataclass, fields, is_dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pypdf import PdfReader, PdfWriter
-from pydantic import BaseModel
-from reportlab.lib import colors
-from reportlab.pdfgen import canvas
+from pypdf.generic import ContentStream, FloatObject, TextStringObject
+from pydantic import BaseModel, Field
+from reportlab.pdfbase import pdfmetrics
+
+from tools.hts_lookup import lookup_hts
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-UPLOAD_DIR = PROJECT_ROOT / "uploads"
+DATA_ROOT = Path(os.getenv("TAX_TOOL_DATA_DIR", PROJECT_ROOT))
+UPLOAD_DIR = DATA_ROOT / "uploads"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 PARSER_PATH = PROJECT_ROOT / "tools" / "7501_parser.py"
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
+APP_USERNAME = os.getenv("APP_USERNAME")
+APP_PASSWORD = os.getenv("APP_PASSWORD")
 
 
 def load_parser_module():
@@ -40,16 +49,54 @@ app = FastAPI(title="7501 Tax Bill Tool", version="0.1.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+@app.middleware("http")
+async def optional_basic_auth(request: Request, call_next):
+    if not APP_USERNAME or not APP_PASSWORD or request.url.path == "/api/health":
+        return await call_next(request)
+    authorization = request.headers.get("Authorization", "")
+    authenticated = False
+    if authorization.startswith("Basic "):
+        try:
+            decoded = base64.b64decode(authorization[6:]).decode("utf-8")
+            username, password = decoded.split(":", 1)
+            authenticated = secrets.compare_digest(username, APP_USERNAME) and secrets.compare_digest(
+                password,
+                APP_PASSWORD,
+            )
+        except (ValueError, UnicodeDecodeError):
+            authenticated = False
+    if not authenticated:
+        return Response(
+            status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="7501 Tax Bill Tool"'},
+        )
+    return await call_next(request)
+
+
 class RecalculateRequest(BaseModel):
     document: dict[str, Any]
     lines: list[dict[str, Any]]
     include_hmf: bool = False
     upload_id: str | None = None
     transport_mode: str = "auto"
+    modified_fields: list[str] = Field(default_factory=list)
 
 
 class GeneratePdfRequest(RecalculateRequest):
     pass
+
+
+@dataclass(frozen=True)
+class PdfTextReplacement:
+    page: int
+    field: str
+    old_text: str
+    new_text: str
+    x_min: float
+    x_max: float
+    y: float | None = None
+    alignment: str = "right"
+    y_tolerance: float = 0.8
 
 
 def dataclass_from_dict(cls, payload: dict[str, Any]):
@@ -92,7 +139,7 @@ def sum_entered_value(lines: list[Any]) -> Decimal | None:
     total = Decimal("0")
     has_value = False
     for line in lines:
-        value = parser.parse_decimal(line.entered_value)
+        value = parser.cbp_entered_value(line.entered_value)
         if value is not None:
             total += value
             has_value = True
@@ -103,10 +150,35 @@ def recalculate(document: Any, lines: list[Any], *, include_hmf: bool) -> None:
     reset_document_calculated_fields(document)
     for line in lines:
         reset_calculated_fields(line)
+        raw_entered_value = line.entered_value
+        normalized_value = parser.format_whole_dollars(line.entered_value)
+        if normalized_value is not None:
+            line.entered_value = normalized_value
+        notes = [
+            note.strip()
+            for note in display(line.parse_notes).split(";")
+            if note.strip() and not note.strip().startswith("entered value rounded")
+        ]
+        raw_decimal = parser.parse_decimal(raw_entered_value)
+        normalized_decimal = parser.parse_decimal(normalized_value)
+        if (
+            raw_decimal is not None
+            and normalized_decimal is not None
+            and raw_decimal != normalized_decimal
+        ):
+            notes.append(f"entered value rounded from {raw_entered_value} to {normalized_value} USD")
+        line.parse_notes = "; ".join(notes)
+        if not line.required_units and line.net_unit:
+            line.required_units = line.net_unit
 
     entered_total = sum_entered_value(lines)
     if entered_total is not None:
         document.total_entered_value = parser.format_money(entered_total)
+        invoice_total = parser.format_money(entered_total)
+        if document.invoice_value is not None:
+            document.invoice_value = invoice_total
+        if document.invoice_entered_value is not None:
+            document.invoice_entered_value = invoice_total
 
     for line in lines:
         parser.calculate_line_amounts(line, has_hmf=include_hmf)
@@ -165,6 +237,8 @@ def response_payload(
     include_hmf: bool,
     upload_id: str | None = None,
     transport_mode: str = "auto",
+    modified_fields: list[str] | None = None,
+    validation_errors: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "document": asdict(document),
@@ -172,6 +246,8 @@ def response_payload(
         "include_hmf": include_hmf,
         "upload_id": upload_id,
         "transport_mode": transport_mode,
+        "modified_fields": modified_fields or [],
+        "validation_errors": validation_errors or [],
         "summary": {
             "line_count": len(lines),
             "has_text_layer": document.has_text_layer,
@@ -216,31 +292,89 @@ def clean_filename(value: str | None) -> str:
     return safe or "7501-adjusted"
 
 
-def format_pdf_money(value: Any, *, keep_cents: bool = True) -> str:
+def format_pdf_number(value: Any, *, keep_cents: bool = True) -> str:
     decimal_value = parser.parse_decimal(value)
     if decimal_value is None:
         return display(value)
     if keep_cents or decimal_value != decimal_value.to_integral_value():
-        return f"${decimal_value:,.2f}"
-    return f"${decimal_value:,.0f}"
+        return f"{decimal_value:,.2f}"
+    return f"{decimal_value:,.0f}"
 
 
-def draw_replacement(c: canvas.Canvas, x: float, y: float, w: float, h: float, value: Any) -> None:
-    c.setFillColor(colors.white)
-    c.setStrokeColor(colors.white)
-    c.rect(x, y - 2, w, h, stroke=0, fill=1)
-    c.setFillColor(colors.black)
-    c.setFont("Helvetica", 9)
-    c.drawRightString(x + w - 1, y, display(value))
+def format_pdf_money(value: Any, *, keep_cents: bool = True) -> str:
+    number = format_pdf_number(value, keep_cents=keep_cents)
+    return f"${number}" if number else ""
 
 
-def group_rows(fragments: list[Any], page: int) -> dict[int, list[Any]]:
-    rows: dict[int, list[Any]] = {}
-    for fragment in fragments:
-        if fragment.page != page or fragment.size < 8.0:
-            continue
-        rows.setdefault(round(fragment.y), []).append(fragment)
-    return {key: sorted(value, key=lambda item: item.x) for key, value in rows.items()}
+def values_equal(left: Any, right: Any) -> bool:
+    left_decimal = parser.parse_decimal(left)
+    right_decimal = parser.parse_decimal(right)
+    if left_decimal is not None and right_decimal is not None:
+        return left_decimal == right_decimal
+    return parser.normalize_spaces(display(left)) == parser.normalize_spaces(display(right))
+
+
+def quantity_text(value: Any, unit: Any, original_value: Any) -> str:
+    decimal_value = parser.parse_decimal(value)
+    original = display(original_value).replace(",", "")
+    decimals = len(original.rsplit(".", 1)[1]) if "." in original else 0
+    if decimal_value is None:
+        number = display(value)
+    elif decimals:
+        number = f"{decimal_value:,.{decimals}f}"
+    else:
+        number = f"{decimal_value:,.0f}"
+    return parser.normalize_spaces(f"{number} {display(unit)}")
+
+
+def format_hts_like_original(value: Any, original_value: Any) -> str:
+    digits = parser.re.sub(r"\D", "", display(value))
+    original = display(original_value)
+    groups = [part for part in parser.re.split(r"\D+", original) if part]
+    if not groups or sum(len(part) for part in groups) != len(digits):
+        return display(value)
+    parts: list[str] = []
+    offset = 0
+    for group in groups:
+        parts.append(digits[offset : offset + len(group)])
+        offset += len(group)
+    return ".".join(parts)
+
+
+def money_values(value: Any) -> list[str]:
+    return [item.strip() for item in display(value).split(";") if item.strip()]
+
+
+def add_replacement(
+    replacements: list[PdfTextReplacement],
+    *,
+    page: int,
+    field: str,
+    old_value: Any,
+    new_value: Any,
+    old_text: str,
+    new_text: str,
+    x_min: float,
+    x_max: float,
+    y: float | None,
+    alignment: str = "right",
+) -> None:
+    if values_equal(old_value, new_value):
+        return
+    if not old_text:
+        raise ValueError(f"{field}: original text is empty")
+    replacements.append(
+        PdfTextReplacement(
+            page=page,
+            field=field,
+            old_text=old_text,
+            new_text=new_text,
+            x_min=x_min,
+            x_max=x_max,
+            y=y,
+            alignment=alignment,
+        )
+    )
 
 
 def row_text(row: list[Any]) -> str:
@@ -260,10 +394,9 @@ def page_line_starts(fragments: list[Any]) -> list[Any]:
     return sorted(starts, key=lambda fragment: (fragment.page, -fragment.y))
 
 
-def original_line_targets(original_path: Path) -> dict[tuple[int, str], dict[str, Any]]:
+def original_line_targets(original_path: Path, parsed: Any) -> dict[tuple[int, str], dict[str, Any]]:
     reader = PdfReader(str(original_path))
     fragments = parser.extract_fragments(reader)
-    parsed = parser.parse_pdf(original_path, "original", f"upload|{original_path.stem}")
     starts = page_line_starts(fragments)
     targets: dict[tuple[int, str], dict[str, Any]] = {}
 
@@ -292,7 +425,11 @@ def original_line_targets(original_path: Path) -> dict[tuple[int, str], dict[str
                 mpf_y = row[0].y
             if "Harbor Maintenance Fee" in text:
                 hmf_y = row[0].y
-            chapter_codes = [item.strip() for item in (original_line.chapter_99_codes or "").split(";") if item.strip()]
+            chapter_codes = [
+                item.strip()
+                for item in (original_line.chapter_99_codes or "").split(";")
+                if item.strip()
+            ]
             if any(code in text for code in chapter_codes):
                 chapter_ys.append(row[0].y)
         targets[(start.page, line_no)] = {
@@ -307,7 +444,7 @@ def original_line_targets(original_path: Path) -> dict[tuple[int, str], dict[str
 
 
 def calculated_chapter_amounts(line: Any) -> list[str]:
-    entered_value = parser.parse_decimal(line.entered_value)
+    entered_value = parser.cbp_entered_value(line.entered_value)
     if entered_value is None:
         return []
     amounts: list[str] = []
@@ -321,62 +458,448 @@ def calculated_chapter_amounts(line: Any) -> list[str]:
     return amounts
 
 
-def draw_page_overlay(c: canvas.Canvas, document: Any, lines: list[Any], targets: dict[tuple[int, str], dict[str, Any]], page_number: int) -> None:
+def line_field_key(line: Any, field_name: str) -> str:
+    return f"line:{line.page}:{line.line_no}:{field_name}"
+
+
+def line_validation_errors(lines: list[Any], modified_fields: list[str] | set[str]) -> list[str]:
+    modified = set(modified_fields)
+    errors: list[str] = []
     for line in lines:
-        if line.page != page_number or not line.line_no:
+        calculation_modified = any(
+            line_field_key(line, field_name) in modified
+            for field_name in ("hts", "net_quantity", "entered_value", "rate")
+        )
+        if calculation_modified and line.rate:
+            calculated_duty = parser.calculate_duty_for_rate(
+                parser.cbp_entered_value(line.entered_value),
+                line.rate,
+                net_quantity=line.net_quantity,
+                net_unit=line.net_unit,
+            )
+            if calculated_duty is None:
+                errors.append(
+                    f"Line {line.line_no}: unsupported or unit-mismatched duty rate {line.rate}"
+                )
+        if calculation_modified:
+            for chapter_rate in [
+                item.strip()
+                for item in display(line.chapter_99_rates).split(";")
+                if item.strip()
+            ]:
+                if parser.percent_to_decimal(chapter_rate) is None:
+                    errors.append(
+                        f"Line {line.line_no}: unsupported Chapter 99 rate {chapter_rate}"
+                    )
+        if line_field_key(line, "net_quantity") not in modified:
             continue
-        target = targets.get((page_number, line.line_no))
-        if not target:
+        net_quantity = parser.parse_decimal(line.net_quantity)
+        gross_weight = parser.parse_decimal(line.gross_weight)
+        net_unit = display(line.net_unit).upper()
+        gross_unit = display(line.gross_unit).upper()
+        if net_quantity is not None and net_quantity < 0:
+            errors.append(f"Line {line.line_no}: net quantity cannot be negative")
+        if (
+            net_unit == "KG"
+            and gross_unit == "KG"
+            and net_quantity is not None
+            and gross_weight is not None
+            and net_quantity > gross_weight
+        ):
+            errors.append(
+                f"Line {line.line_no}: net quantity {line.net_quantity} KG exceeds "
+                f"gross weight {line.gross_weight} KG"
+            )
+    return errors
+
+
+def build_pdf_text_replacements(
+    original_path: Path,
+    document: Any,
+    lines: list[Any],
+    modified_fields: list[str] | set[str],
+) -> list[PdfTextReplacement]:
+    modified = set(modified_fields)
+    if not modified:
+        return []
+
+    parsed = parser.parse_pdf(original_path, "original", f"upload|{original_path.stem}")
+    original_document = parsed.document
+    targets = original_line_targets(original_path, parsed)
+    replacements: list[PdfTextReplacement] = []
+    transport_changed = "document:transport_mode" in modified
+    entered_changed_any = False
+    duty_changed_any = False
+    other_changed_any = transport_changed
+
+    for line in lines:
+        if not line.page or not line.line_no:
             continue
+        net_quantity_changed = line_field_key(line, "net_quantity") in modified
+        entered_value_changed = line_field_key(line, "entered_value") in modified
+        rate_changed = line_field_key(line, "rate") in modified
+        hts_changed = line_field_key(line, "hts") in modified
+        line_duty_changed = net_quantity_changed or entered_value_changed or rate_changed
+        if not line_duty_changed and not hts_changed and not transport_changed:
+            continue
+
+        target = targets.get((line.page, line.line_no))
+        if target is None:
+            raise ValueError(f"Unable to locate line {line.line_no} on page {line.page} in the original PDF")
+        original_line = target["original"]
         hts_y = target.get("hts_y")
-        if hts_y:
-            draw_replacement(c, 330, hts_y, 64, 11, format_pdf_money(line.entered_value, keep_cents=False))
-            if line.calculated_base_duty:
-                draw_replacement(c, 536, hts_y, 43, 11, format_pdf_money(line.calculated_base_duty, keep_cents=True))
-        for amount, y in zip(calculated_chapter_amounts(line), target.get("chapter_ys") or []):
-            if amount:
-                draw_replacement(c, 536, y, 43, 11, format_pdf_money(amount, keep_cents=True))
-        if target.get("mpf_y") and line.calculated_mpf_amount:
-            draw_replacement(c, 536, target["mpf_y"], 43, 11, format_pdf_money(line.calculated_mpf_amount, keep_cents=True))
-        if target.get("hmf_y") and line.calculated_hmf_amount:
-            draw_replacement(c, 536, target["hmf_y"], 43, 11, format_pdf_money(line.calculated_hmf_amount, keep_cents=True))
+        entered_changed_any = entered_changed_any or entered_value_changed
+        duty_changed_any = duty_changed_any or line_duty_changed
+        other_changed_any = other_changed_any or entered_value_changed
 
-    if page_number == 1:
-        if document.total_entered_value:
-            draw_replacement(c, 175, 248, 78, 11, format_pdf_money(document.total_entered_value, keep_cents=False))
-        if document.calculated_duty_total:
-            draw_replacement(c, 536, 241.5, 43, 11, format_pdf_money(document.calculated_duty_total, keep_cents=True))
-        if document.calculated_other_total:
-            draw_replacement(c, 536, 197.5, 43, 11, format_pdf_money(document.calculated_other_total, keep_cents=True))
-        if document.calculated_grand_total:
-            draw_replacement(c, 536, 175.5, 43, 11, format_pdf_money(document.calculated_grand_total, keep_cents=True))
+        if hts_changed:
+            add_replacement(
+                replacements,
+                page=line.page,
+                field=f"line {line.line_no} HTS",
+                old_value=parser.re.sub(r"\D", "", display(original_line.hts)),
+                new_value=parser.re.sub(r"\D", "", display(line.hts)),
+                old_text=display(original_line.hts),
+                new_text=format_hts_like_original(line.hts, original_line.hts),
+                x_min=60,
+                x_max=190,
+                y=hts_y,
+                alignment="left",
+            )
+
+        if net_quantity_changed:
+            old_quantity_text = quantity_text(
+                original_line.net_quantity,
+                original_line.net_unit,
+                original_line.net_quantity,
+            )
+            new_quantity_text = quantity_text(
+                line.net_quantity,
+                line.net_unit or original_line.net_unit,
+                original_line.net_quantity,
+            )
+            add_replacement(
+                replacements,
+                page=line.page,
+                field=f"line {line.line_no} net quantity",
+                old_value=old_quantity_text,
+                new_value=new_quantity_text,
+                old_text=old_quantity_text,
+                new_text=new_quantity_text,
+                x_min=230,
+                x_max=350,
+                y=hts_y,
+            )
+        if entered_value_changed:
+            add_replacement(
+                replacements,
+                page=line.page,
+                field=f"line {line.line_no} entered value",
+                old_value=original_line.entered_value,
+                new_value=line.entered_value,
+                old_text=format_pdf_money(original_line.entered_value, keep_cents=False),
+                new_text=format_pdf_money(line.entered_value, keep_cents=False),
+                x_min=350,
+                x_max=398,
+                y=hts_y,
+            )
+        if rate_changed:
+            add_replacement(
+                replacements,
+                page=line.page,
+                field=f"line {line.line_no} rate",
+                old_value=original_line.rate,
+                new_value=line.rate,
+                old_text=display(original_line.rate),
+                new_text=display(line.rate),
+                x_min=395,
+                x_max=535,
+                y=hts_y,
+                alignment="left",
+            )
+        if line_duty_changed:
+            add_replacement(
+                replacements,
+                page=line.page,
+                field=f"line {line.line_no} base duty",
+                old_value=original_line.duty_amount,
+                new_value=line.calculated_base_duty,
+                old_text=format_pdf_money(original_line.duty_amount),
+                new_text=format_pdf_money(line.calculated_base_duty),
+                x_min=530,
+                x_max=590,
+                y=hts_y,
+            )
+
+        if entered_value_changed:
+            old_chapter_amounts = money_values(original_line.chapter_99_amounts)
+            new_chapter_amounts = calculated_chapter_amounts(line)
+            chapter_ys = target.get("chapter_ys") or []
+            for index, (old_amount, new_amount) in enumerate(zip(old_chapter_amounts, new_chapter_amounts)):
+                add_replacement(
+                    replacements,
+                    page=line.page,
+                    field=f"line {line.line_no} chapter 99 duty {index + 1}",
+                    old_value=old_amount,
+                    new_value=new_amount,
+                    old_text=format_pdf_money(old_amount),
+                    new_text=format_pdf_money(new_amount),
+                    x_min=530,
+                    x_max=590,
+                    y=chapter_ys[index] if index < len(chapter_ys) else None,
+                )
+            add_replacement(
+                replacements,
+                page=line.page,
+                field=f"line {line.line_no} MPF",
+                old_value=original_line.mpf_amount,
+                new_value=line.calculated_mpf_amount,
+                old_text=format_pdf_money(original_line.mpf_amount),
+                new_text=format_pdf_money(line.calculated_mpf_amount),
+                x_min=530,
+                x_max=590,
+                y=target.get("mpf_y"),
+            )
+
+        if (entered_value_changed or transport_changed) and (
+            original_line.hmf_amount is not None or line.calculated_hmf_amount is not None
+        ):
+            add_replacement(
+                replacements,
+                page=line.page,
+                field=f"line {line.line_no} HMF",
+                old_value=original_line.hmf_amount,
+                new_value=line.calculated_hmf_amount,
+                old_text=format_pdf_money(original_line.hmf_amount),
+                new_text=format_pdf_money(line.calculated_hmf_amount),
+                x_min=530,
+                x_max=590,
+                y=target.get("hmf_y"),
+            )
+
+    if entered_changed_any:
+        add_replacement(
+            replacements,
+            page=1,
+            field="total entered value",
+            old_value=original_document.total_entered_value,
+            new_value=document.total_entered_value,
+            old_text=format_pdf_number(original_document.total_entered_value, keep_cents=False),
+            new_text=format_pdf_number(document.total_entered_value, keep_cents=False),
+            x_min=175,
+            x_max=260,
+            y=248,
+            alignment="left",
+        )
+        add_replacement(
+            replacements,
+            page=1,
+            field="MPF summary",
+            old_value=original_document.mpf_total,
+            new_value=document.calculated_mpf_total,
+            old_text=format_pdf_money(original_document.mpf_total),
+            new_text=format_pdf_money(document.calculated_mpf_total),
+            x_min=120,
+            x_max=175,
+            y=258,
+        )
+    if duty_changed_any:
+        add_replacement(
+            replacements,
+            page=1,
+            field="duty total",
+            old_value=original_document.duty_total,
+            new_value=document.calculated_duty_total,
+            old_text=format_pdf_money(original_document.duty_total),
+            new_text=format_pdf_money(document.calculated_duty_total),
+            x_min=530,
+            x_max=590,
+            y=241.5,
+        )
+    if other_changed_any:
+        add_replacement(
+            replacements,
+            page=1,
+            field="block 39 other fees",
+            old_value=original_document.total_other_fees or original_document.other_total,
+            new_value=document.calculated_other_total,
+            old_text=format_pdf_number(original_document.total_other_fees or original_document.other_total),
+            new_text=format_pdf_number(document.calculated_other_total),
+            x_min=175,
+            x_max=260,
+            y=218,
+            alignment="left",
+        )
+        add_replacement(
+            replacements,
+            page=1,
+            field="other total",
+            old_value=original_document.other_total,
+            new_value=document.calculated_other_total,
+            old_text=format_pdf_money(original_document.other_total),
+            new_text=format_pdf_money(document.calculated_other_total),
+            x_min=530,
+            x_max=590,
+            y=197.5,
+        )
+    if duty_changed_any or other_changed_any:
+        add_replacement(
+            replacements,
+            page=1,
+            field="grand total",
+            old_value=original_document.grand_total,
+            new_value=document.calculated_grand_total,
+            old_text=format_pdf_money(original_document.grand_total),
+            new_text=format_pdf_money(document.calculated_grand_total),
+            x_min=530,
+            x_max=590,
+            y=175.5,
+        )
+
+    if entered_changed_any:
+        invoice_page = original_document.pages
+        add_replacement(
+            replacements,
+            page=invoice_page,
+            field="invoice value",
+            old_value=original_document.invoice_value,
+            new_value=document.invoice_value,
+            old_text=f"{format_pdf_number(original_document.invoice_value)} USD",
+            new_text=f"{format_pdf_number(document.invoice_value)} USD",
+            x_min=200,
+            x_max=390,
+            y=None,
+            alignment="left",
+        )
+        add_replacement(
+            replacements,
+            page=invoice_page,
+            field="invoice entered value",
+            old_value=original_document.invoice_entered_value,
+            new_value=document.invoice_entered_value,
+            old_text=f"{format_pdf_number(original_document.invoice_entered_value)} USD",
+            new_text=f"{format_pdf_number(document.invoice_entered_value)} USD",
+            x_min=480,
+            x_max=590,
+            y=None,
+            alignment="left",
+        )
+    return replacements
 
 
-def template_preserving_pdf(original_path: Path, document: Any, lines: list[Any]) -> bytes:
-    reader = PdfReader(str(original_path))
-    writer = PdfWriter()
-    targets = original_line_targets(original_path)
+def page_font_name(page: Any, resource_name: Any) -> str:
+    fonts = (page.get("/Resources") or {}).get("/Font") or {}
+    try:
+        fonts = fonts.get_object()
+    except AttributeError:
+        pass
+    font = fonts.get(resource_name)
+    if font is None:
+        raise ValueError(f"Unable to resolve PDF font {resource_name}")
+    font = font.get_object()
+    base_name = str(font.get("/BaseFont") or resource_name).lstrip("/")
+    if "+" in base_name:
+        base_name = base_name.split("+", 1)[1]
+    aliases = {
+        "Arial": "Helvetica",
+        "ArialMT": "Helvetica",
+        "Arial-BoldMT": "Helvetica-Bold",
+        "Arial-ItalicMT": "Helvetica-Oblique",
+    }
+    font_name = aliases.get(base_name, base_name)
+    try:
+        pdfmetrics.getFont(font_name)
+    except KeyError as exc:
+        raise ValueError(f"Unsupported PDF font for exact replacement: {base_name}") from exc
+    return font_name
 
-    for page_index, page in enumerate(reader.pages, start=1):
-        width = float(page.mediabox.width)
-        height = float(page.mediabox.height)
-        buffer = BytesIO()
-        c = canvas.Canvas(buffer, pagesize=(width, height))
-        draw_page_overlay(c, document, lines, targets, page_index)
-        c.save()
-        buffer.seek(0)
-        overlay_reader = PdfReader(buffer)
-        page.merge_page(overlay_reader.pages[0])
-        writer.add_page(page)
+
+def apply_page_replacements(
+    page: Any,
+    writer: PdfWriter,
+    replacements: list[PdfTextReplacement],
+) -> list[PdfTextReplacement]:
+    content = ContentStream(page.get_contents(), writer)
+    pending = list(replacements)
+    applied: list[PdfTextReplacement] = []
+    current_tm: list[Any] | None = None
+    current_font: Any = None
+    current_size = 0.0
+
+    for operands, operator in content.operations:
+        if operator == b"Tf":
+            current_font = operands[0]
+            current_size = float(operands[1])
+            continue
+        if operator == b"Tm":
+            current_tm = operands
+            continue
+        if operator != b"Tj" or current_tm is None or not operands:
+            continue
+
+        x = float(current_tm[4])
+        y = float(current_tm[5])
+        old_text = str(operands[0])
+        for replacement in pending:
+            y_matches = replacement.y is None or abs(y - replacement.y) <= replacement.y_tolerance
+            if (
+                old_text != replacement.old_text
+                or not replacement.x_min <= x <= replacement.x_max
+                or not y_matches
+            ):
+                continue
+            if replacement.alignment == "right":
+                font_name = page_font_name(page, current_font)
+                right_edge = x + pdfmetrics.stringWidth(old_text, font_name, current_size)
+                new_width = pdfmetrics.stringWidth(replacement.new_text, font_name, current_size)
+                current_tm[4] = FloatObject(right_edge - new_width)
+            operands[0] = TextStringObject(replacement.new_text)
+            pending.remove(replacement)
+            applied.append(replacement)
+            break
+
+    if applied:
+        page.replace_contents(content)
+    return applied
+
+
+def template_preserving_pdf(
+    original_path: Path,
+    document: Any,
+    lines: list[Any],
+    modified_fields: list[str] | set[str],
+) -> bytes:
+    replacements = build_pdf_text_replacements(original_path, document, lines, modified_fields)
+    if not replacements:
+        return original_path.read_bytes()
+
+    writer = PdfWriter(clone_from=str(original_path))
+    applied: list[PdfTextReplacement] = []
+    for page_number, page in enumerate(writer.pages, start=1):
+        page_replacements = [item for item in replacements if item.page == page_number]
+        if page_replacements:
+            applied.extend(apply_page_replacements(page, writer, page_replacements))
+
+    missing = [item.field for item in replacements if item not in applied]
+    if missing:
+        fields_text = ", ".join(missing)
+        raise ValueError(
+            "The original PDF text layout could not be matched exactly for: "
+            f"{fields_text}. No adjusted PDF was generated."
+        )
 
     output = BytesIO()
     writer.write(output)
-    output.seek(0)
     return output.getvalue()
 
 
-def generate_adjusted_pdf(original_path: Path, document: Any, lines: list[Any]) -> bytes:
-    return template_preserving_pdf(original_path, document, lines)
+def generate_adjusted_pdf(
+    original_path: Path,
+    document: Any,
+    lines: list[Any],
+    modified_fields: list[str] | set[str],
+) -> bytes:
+    return template_preserving_pdf(original_path, document, lines, modified_fields)
 
 
 @app.get("/")
@@ -389,6 +912,18 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/hts-lookup")
+def hts_lookup(code: str) -> dict[str, Any]:
+    try:
+        return lookup_hts(code)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Unable to query current USITC HTS data: {exc}") from exc
+
+
 @app.post("/api/parse")
 async def parse_upload(file: UploadFile = File(...)) -> dict[str, Any]:
     if not file.filename:
@@ -399,6 +934,12 @@ async def parse_upload(file: UploadFile = File(...)) -> dict[str, Any]:
     try:
         with saved_path.open("wb") as output:
             shutil.copyfileobj(file.file, output)
+        if saved_path.stat().st_size > MAX_UPLOAD_BYTES:
+            saved_path.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=413,
+                detail=f"PDF exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB upload limit.",
+            )
         key = f"upload|{Path(file.filename).stem}"
         parsed = parser.parse_pdf(saved_path, "original", key)
         include_hmf = bool(parsed.document.hmf_total) or any(line.hmf_amount for line in parsed.lines)
@@ -427,12 +968,15 @@ def recalculate_payload(payload: RecalculateRequest) -> dict[str, Any]:
         lines = [dataclass_from_dict(parser.TaxLine, line) for line in payload.lines]
         document.line_count = len(lines)
         recalculate(document, lines, include_hmf=payload.include_hmf)
+        validation_errors = line_validation_errors(lines, payload.modified_fields)
         return response_payload(
             document,
             lines,
             include_hmf=payload.include_hmf,
             upload_id=payload.upload_id,
             transport_mode=payload.transport_mode,
+            modified_fields=payload.modified_fields,
+            validation_errors=validation_errors,
         )
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Unable to recalculate: {exc}") from exc
@@ -445,8 +989,11 @@ def generate_pdf(payload: GeneratePdfRequest) -> StreamingResponse:
         lines = [dataclass_from_dict(parser.TaxLine, line) for line in payload.lines]
         document.line_count = len(lines)
         recalculate(document, lines, include_hmf=payload.include_hmf)
+        validation_errors = line_validation_errors(lines, payload.modified_fields)
+        if validation_errors:
+            raise ValueError("; ".join(validation_errors))
         original_path = upload_path(payload.upload_id)
-        pdf_bytes = generate_adjusted_pdf(original_path, document, lines)
+        pdf_bytes = generate_adjusted_pdf(original_path, document, lines, payload.modified_fields)
         filename = f"{clean_filename(document.source_file)}-adjusted-7501.pdf"
         return StreamingResponse(
             BytesIO(pdf_bytes),

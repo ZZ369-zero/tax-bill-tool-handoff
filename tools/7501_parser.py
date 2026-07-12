@@ -15,6 +15,7 @@ from pypdf import PdfReader
 MODIFIED_MARKERS = ("副本", "更新")
 PDF_EXTENSIONS = {".pdf"}
 MONEY_QUANT = Decimal("0.01")
+WHOLE_DOLLAR_QUANT = Decimal("1")
 MPF_RATE = Decimal("0.003464")
 MPF_MIN = Decimal("33.58")
 MPF_MAX = Decimal("651.50")
@@ -41,6 +42,9 @@ class TaxLine:
     line_no: str | None = None
     description: str | None = None
     hts: str | None = None
+    hts_description: str | None = None
+    required_units: str | None = None
+    hts_additional_codes: str | None = None
     gross_weight: str | None = None
     gross_unit: str | None = None
     net_quantity: str | None = None
@@ -315,6 +319,20 @@ def money_round(value: Decimal) -> Decimal:
     return value.quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
 
 
+def cbp_entered_value(value: str | Decimal | None) -> Decimal | None:
+    decimal_value = value if isinstance(value, Decimal) else parse_decimal(value)
+    if decimal_value is None:
+        return None
+    return decimal_value.quantize(WHOLE_DOLLAR_QUANT, rounding=ROUND_HALF_UP)
+
+
+def format_whole_dollars(value: str | Decimal | None) -> str | None:
+    decimal_value = cbp_entered_value(value)
+    if decimal_value is None:
+        return None
+    return f"{decimal_value:,.0f}"
+
+
 def percent_to_decimal(value: str | None) -> Decimal | None:
     if not value:
         return None
@@ -334,6 +352,7 @@ def calculate_duty_for_rate(
     rate_text: str | None,
     *,
     net_quantity: str | None = None,
+    net_unit: str | None = None,
 ) -> Decimal | None:
     rate_decimal = percent_to_decimal(rate_text)
     if rate_decimal is not None:
@@ -345,21 +364,50 @@ def calculate_duty_for_rate(
     net_quantity_decimal = parse_decimal(net_quantity)
 
     percent_part = Decimal("0")
-    percent_match = re.search(r"([0-9.]+%)", cleaned)
-    if percent_match:
-        percent_rate = percent_to_decimal(percent_match.group(1))
+    percent_matches = re.findall(r"([0-9.]+%)", cleaned)
+    for percent_text in percent_matches:
+        percent_rate = percent_to_decimal(percent_text)
         if percent_rate is not None:
-            percent_part = money_round(entered_value * percent_rate)
+            percent_part += money_round(entered_value * percent_rate)
 
     specific_part = Decimal("0")
-    specific_match = re.search(r"\$\s*([0-9.]+)\s+per\s+[A-Z]+", cleaned, re.I)
-    if specific_match and net_quantity_decimal is not None:
+    specific_matches = [
+        ("$", amount, unit)
+        for amount, unit in re.findall(
+            r"\$\s*([0-9.]+)\s*(?:per|/)\s*([A-Z.]+)",
+            cleaned,
+            re.I,
+        )
+    ]
+    specific_matches.extend(
+        ("\u00a2", amount, unit)
+        for amount, unit in re.findall(
+            r"([0-9.]+)\s*\u00a2\s*(?:per|/)\s*([A-Z.]+)",
+            cleaned,
+            re.I,
+        )
+    )
+    normalized_net_unit = re.sub(r"[^A-Z]", "", (net_unit or "").upper())
+    for currency, amount_text, rate_unit in specific_matches:
+        normalized_rate_unit = re.sub(r"[^A-Z]", "", rate_unit.upper())
+        if (
+            net_quantity_decimal is None
+            or not normalized_net_unit
+            or normalized_rate_unit != normalized_net_unit
+        ):
+            return None
         try:
-            specific_part = money_round(Decimal(specific_match.group(1)) * net_quantity_decimal)
+            amount = Decimal(amount_text)
+            if currency == "\u00a2":
+                amount /= Decimal("100")
+            specific_part += money_round(amount * net_quantity_decimal)
         except InvalidOperation:
-            specific_part = Decimal("0")
+            return None
 
-    if percent_match or specific_match:
+    has_specific_marker = "$" in cleaned or "\u00a2" in cleaned
+    if has_specific_marker and not specific_matches:
+        return None
+    if percent_matches or specific_matches:
         return money_round(percent_part + specific_part)
     return None
 
@@ -862,7 +910,7 @@ def parse_pdf(path: Path, file_role: str, key: str) -> ParsedFile:
 
 
 def calculate_line_amounts(line: TaxLine, *, has_hmf: bool) -> None:
-    entered_value = parse_decimal(line.entered_value)
+    entered_value = cbp_entered_value(line.entered_value)
     if entered_value is None:
         return
 
@@ -870,6 +918,7 @@ def calculate_line_amounts(line: TaxLine, *, has_hmf: bool) -> None:
         entered_value,
         line.rate,
         net_quantity=line.net_quantity,
+        net_unit=line.net_unit,
     )
     if base_duty is not None:
         line.calculated_base_duty = format_money(base_duty)
@@ -930,7 +979,10 @@ def apply_calculations(parsed_files: list[ParsedFile]) -> None:
 
         duty_total = sum_decimal_field(parsed.lines, "calculated_duty_total")
         hmf_total = sum_decimal_field(parsed.lines, "calculated_hmf_amount")
-        entered_total = parse_decimal(parsed.document.total_entered_value)
+        entered_values = [cbp_entered_value(line.entered_value) for line in parsed.lines]
+        entered_total = sum((value for value in entered_values if value is not None), Decimal("0"))
+        if not any(value is not None for value in entered_values):
+            entered_total = None
 
         if entered_total is not None:
             parsed.document.calculated_mpf_total = format_money(clamp_mpf(money_round(entered_total * MPF_RATE)))
