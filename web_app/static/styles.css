@@ -340,24 +340,31 @@ th:nth-child(3) {
   width: 132px;
 }
 
-td:nth-child(4),
-th:nth-child(4),
-td:nth-child(6),
-th:nth-child(6),
+td:nth-child(5),
+th:nth-child(5),
 td:nth-child(7),
 th:nth-child(7),
 td:nth-child(8),
 th:nth-child(8),
 td:nth-child(9),
-th:nth-child(9) {
+th:nth-child(9),
+td:nth-child(10),
+th:nth-child(10) {
   width: 116px;
 }
 
-td:nth-child(5),
-th:nth-child(5) {
+td:nth-child(4),
+th:nth-child(4) {
+  width: 164px;
+}
+
+td:nth-child(6),
+th:nth-child(6) {
   width: 156px;
 }
 
+.hts-input,
+.quantity-input,
 .money-input,
 .rate-input {
   width: 100%;
@@ -367,6 +374,46 @@ th:nth-child(5) {
   padding: 6px 8px;
   background: #ffffff;
   color: var(--ink);
+}
+
+.description-stack,
+.rate-stack {
+  display: grid;
+  gap: 5px;
+}
+
+.official-description,
+.additional-rates {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.official-description {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.quantity-editor {
+  display: grid;
+  grid-template-columns: minmax(70px, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.unit-badge {
+  min-width: 34px;
+  padding: 5px 6px;
+  border: 1px solid #b8c2cf;
+  border-radius: 4px;
+  background: #eef2f6;
+  color: #26384a;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .money {

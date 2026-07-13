@@ -4,6 +4,8 @@ const state = {
   includeHmf: false,
   uploadId: null,
   transportMode: "auto",
+  modifiedFields: new Set(),
+  validationErrors: [],
   recalcTimer: null,
 };
 
@@ -57,7 +59,7 @@ function money(value) {
 function setBusy(isBusy, label = "处理中") {
   els.parseButton.disabled = isBusy;
   els.recalculateButton.disabled = isBusy || !state.document;
-  els.generatePdfButton.disabled = isBusy || !state.document;
+  els.generatePdfButton.disabled = isBusy || !state.document || state.validationErrors.length > 0;
   els.downloadJsonButton.disabled = isBusy || !state.document;
   if (isBusy) {
     els.statusText.textContent = label;
@@ -84,6 +86,10 @@ function applyPayload(payload) {
   state.includeHmf = Boolean(payload.include_hmf);
   state.uploadId = payload.upload_id || state.uploadId;
   state.transportMode = payload.transport_mode || state.transportMode || "auto";
+  if (payload.modified_fields !== undefined) {
+    state.modifiedFields = new Set(payload.modified_fields || []);
+  }
+  state.validationErrors = payload.validation_errors || [];
   els.includeHmf.checked = state.includeHmf;
   renderModeButtons();
   render();
@@ -117,6 +123,7 @@ function collectWarnings() {
     return [];
   }
   const warnings = [];
+  warnings.push(...state.validationErrors);
   if (!state.document.has_text_layer) {
     warnings.push("未检测到稳定文本层");
   }
@@ -129,12 +136,29 @@ function collectWarnings() {
       warnings.push(`${field}: ${value}`);
     }
   }
+  for (const line of state.lines) {
+    if (line.parse_notes) {
+      warnings.push(`Line ${line.line_no}: ${line.parse_notes}`);
+    }
+    if (line.hts_description) {
+      const suggested = String(line.hts_additional_codes || "").split(";").map((item) => item.trim()).filter(Boolean);
+      const currentCodes = String(line.chapter_99_codes || "").split(";").map((item) => item.trim()).filter(Boolean);
+      const missing = suggested.filter((code) => !currentCodes.includes(code));
+      const possiblyStale = currentCodes.filter((code) => code !== "9903.03.01" && !suggested.includes(code));
+      if (missing.length) {
+        warnings.push(`Line ${line.line_no}: HTS 提示附加税项 ${missing.join(", ")}，请人工确认`);
+      }
+      if (possiblyStale.length) {
+        warnings.push(`Line ${line.line_no}: 原附加税项 ${possiblyStale.join(", ")} 可能不再匹配新 HTS`);
+      }
+    }
+  }
   return warnings;
 }
 
 function renderLines() {
   if (!state.lines.length) {
-    els.lineTableBody.innerHTML = '<tr class="empty-row"><td colspan="9">暂无数据</td></tr>';
+    els.lineTableBody.innerHTML = '<tr class="empty-row"><td colspan="10">暂无数据</td></tr>';
     return;
   }
 
@@ -142,13 +166,21 @@ function renderLines() {
     .map((line, index) => {
       const variance = line.duty_variance || line.mpf_variance || line.hmf_variance || "0.00";
       const varianceClass = Number(variance) === 0 ? "variance-ok" : "variance-warn";
+      const requiredUnits = text(line.required_units || line.net_unit);
+      const htsDescription = line.hts_description
+        ? `<small class="official-description" title="${escapeHtml(line.hts_description)}">USITC: ${escapeHtml(line.hts_description)}</small>`
+        : "";
+      const additionalRates = line.chapter_99_codes
+        ? `<small class="additional-rates">${escapeHtml(line.chapter_99_codes)} · ${escapeHtml(text(line.chapter_99_rates))}</small>`
+        : "";
       return `
         <tr>
           <td>${escapeHtml(text(line.line_no))}</td>
-          <td>${escapeHtml(text(line.description))}</td>
-          <td>${escapeHtml(text(line.hts))}</td>
-          <td><input class="money-input" data-index="${index}" data-field="entered_value" value="${escapeHtml(text(line.entered_value))}" /></td>
-          <td><input class="rate-input" data-index="${index}" data-field="rate" value="${escapeHtml(text(line.rate))}" /></td>
+          <td><div class="description-stack"><span>${escapeHtml(text(line.description))}</span>${htsDescription}</div></td>
+          <td><input class="hts-input" data-index="${index}" data-field="hts" aria-label="Line ${escapeHtml(text(line.line_no))} HTS" value="${escapeHtml(text(line.hts))}" /></td>
+          <td><div class="quantity-editor"><input class="quantity-input" inputmode="decimal" data-index="${index}" data-field="net_quantity" aria-label="Line ${escapeHtml(text(line.line_no))} net quantity in ${escapeHtml(requiredUnits)}" value="${escapeHtml(text(line.net_quantity))}" /><span class="unit-badge" title="HTS required units">${escapeHtml(requiredUnits)}</span></div></td>
+          <td><input class="money-input" inputmode="decimal" data-index="${index}" data-field="entered_value" aria-label="Line ${escapeHtml(text(line.line_no))} entered value in whole US dollars" value="${escapeHtml(text(line.entered_value))}" /></td>
+          <td><div class="rate-stack"><input class="rate-input" data-index="${index}" data-field="rate" value="${escapeHtml(text(line.rate))}" />${additionalRates}</div></td>
           <td class="money">${escapeHtml(money(line.calculated_duty_total || line.duty_amount))}</td>
           <td class="money">${escapeHtml(money(line.calculated_mpf_amount || line.mpf_amount))}</td>
           <td class="money">${escapeHtml(money(line.calculated_hmf_amount || line.hmf_amount))}</td>
@@ -159,6 +191,41 @@ function renderLines() {
     .join("");
 }
 
+async function lookupHts(index) {
+  const line = state.lines[index];
+  const code = String(line?.hts || "").trim();
+  if (!code) {
+    return;
+  }
+  setStatus(`正在查询 HTS ${code}`, collectWarnings());
+  try {
+    const response = await fetch(`/api/hts-lookup?code=${encodeURIComponent(code)}`);
+    if (!response.ok) {
+      throw new Error(await errorText(response));
+    }
+    const result = await response.json();
+    line.hts = result.code;
+    line.hts_description = result.description;
+    line.required_units = result.required_units || line.net_unit;
+    if (result.units?.length) {
+      const nextUnit = result.units[0];
+      if (line.net_unit && line.net_unit !== nextUnit) {
+        state.modifiedFields.add(`line:${line.page}:${line.line_no}:net_quantity`);
+      }
+      line.net_unit = nextUnit;
+    }
+    if (result.general_rate) {
+      line.rate = result.general_rate;
+      state.modifiedFields.add(`line:${line.page}:${line.line_no}:rate`);
+    }
+    line.hts_additional_codes = (result.additional_hts_codes || []).join("; ") || null;
+    renderLines();
+    await recalculate();
+  } catch (error) {
+    setStatus(error.message || "HTS 查询失败", collectWarnings());
+  }
+}
+
 function scheduleRecalculate() {
   window.clearTimeout(state.recalcTimer);
   state.recalcTimer = window.setTimeout(() => {
@@ -167,6 +234,9 @@ function scheduleRecalculate() {
 }
 
 function setTransportMode(mode) {
+  if (state.transportMode !== mode) {
+    state.modifiedFields.add("document:transport_mode");
+  }
   state.transportMode = mode;
   if (mode === "ocean") {
     state.includeHmf = true;
@@ -224,6 +294,7 @@ async function recalculate() {
         document: state.document,
         lines: state.lines,
         include_hmf: state.includeHmf,
+        modified_fields: Array.from(state.modifiedFields),
       }),
     });
     if (!response.ok) {
@@ -243,6 +314,7 @@ function currentPayload() {
     include_hmf: state.includeHmf,
     upload_id: state.uploadId,
     transport_mode: state.transportMode,
+    modified_fields: Array.from(state.modifiedFields),
   };
 }
 
@@ -323,6 +395,7 @@ for (const button of els.modeButtons) {
   button.addEventListener("click", () => setTransportMode(button.dataset.mode));
 }
 els.includeHmf.addEventListener("change", () => {
+  state.modifiedFields.add("document:transport_mode");
   state.includeHmf = els.includeHmf.checked;
   if (state.includeHmf) {
     state.transportMode = "ocean";
@@ -342,8 +415,17 @@ els.lineTableBody.addEventListener("input", (event) => {
   }
   const index = Number(target.dataset.index);
   const field = target.dataset.field;
+  const line = state.lines[index];
+  state.modifiedFields.add(`line:${line.page}:${line.line_no}:${field}`);
   state.lines[index][field] = target.value;
   scheduleRecalculate();
+});
+els.lineTableBody.addEventListener("change", (event) => {
+  const target = event.target;
+  if (!target.matches('input[data-field="hts"][data-index]')) {
+    return;
+  }
+  lookupHts(Number(target.dataset.index));
 });
 
 render();
