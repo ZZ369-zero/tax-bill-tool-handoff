@@ -83,6 +83,33 @@ uploaded tax PDFs as temporary working files. For multi-user or long-term
 retention, replace local uploads with encrypted object storage and add user
 accounts plus an audit database before production use.
 
+### Excel worksheet 2 workflow
+
+Use the original 7501 PDF plus a two-sheet commercial invoice workbook to generate a new PDF through the deployed service. The command reads worksheet 2, matches rows to the tax form by HTS, and updates:
+
+- Gross weight from the populated item-level gross-weight column.
+- Net quantity from item quantity, or net weight when the tax-form reporting unit is `KG`.
+- Entered value from the FOB total-value column.
+
+The original PDF is never overwritten. If the default output name already exists, the command adds `(2)`, `(3)`, and so on.
+
+```powershell
+$env:TAX_TOOL_USERNAME="your-login-name"
+$env:TAX_TOOL_PASSWORD="your-login-password"
+python .\tools\excel_workflow.py "C:\path\to\131-80596740"
+```
+
+Optional arguments:
+
+```powershell
+python .\tools\excel_workflow.py "C:\path\to\folder" `
+  --pdf "C:\path\to\original.pdf" `
+  --excel "C:\path\to\invoice.xlsx" `
+  --output "C:\path\to\new-tax-bill.pdf" `
+  --url "https://tax-bill-tool.onrender.com"
+```
+
+The workbook must be saved after worksheet 2 is updated so formula results are available to the server.
 ### Batch parser
 
 ```powershell

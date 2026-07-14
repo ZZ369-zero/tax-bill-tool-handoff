@@ -21,6 +21,7 @@ from pypdf.generic import ContentStream, FloatObject, TextStringObject
 from pydantic import BaseModel, Field
 from reportlab.pdfbase import pdfmetrics
 
+from tools.excel_adjustment import apply_second_sheet
 from tools.hts_lookup import lookup_hts
 
 
@@ -491,14 +492,18 @@ def line_validation_errors(lines: list[Any], modified_fields: list[str] | set[st
                     errors.append(
                         f"Line {line.line_no}: unsupported Chapter 99 rate {chapter_rate}"
                     )
-        if line_field_key(line, "net_quantity") not in modified:
+        net_quantity_modified = line_field_key(line, "net_quantity") in modified
+        gross_weight_modified = line_field_key(line, "gross_weight") in modified
+        if not net_quantity_modified and not gross_weight_modified:
             continue
         net_quantity = parser.parse_decimal(line.net_quantity)
         gross_weight = parser.parse_decimal(line.gross_weight)
         net_unit = display(line.net_unit).upper()
         gross_unit = display(line.gross_unit).upper()
-        if net_quantity is not None and net_quantity < 0:
+        if net_quantity_modified and net_quantity is not None and net_quantity < 0:
             errors.append(f"Line {line.line_no}: net quantity cannot be negative")
+        if gross_weight_modified and gross_weight is not None and gross_weight < 0:
+            errors.append(f"Line {line.line_no}: gross weight cannot be negative")
         if (
             net_unit == "KG"
             and gross_unit == "KG"
@@ -535,12 +540,18 @@ def build_pdf_text_replacements(
     for line in lines:
         if not line.page or not line.line_no:
             continue
+        gross_weight_changed = line_field_key(line, "gross_weight") in modified
         net_quantity_changed = line_field_key(line, "net_quantity") in modified
         entered_value_changed = line_field_key(line, "entered_value") in modified
         rate_changed = line_field_key(line, "rate") in modified
         hts_changed = line_field_key(line, "hts") in modified
         line_duty_changed = net_quantity_changed or entered_value_changed or rate_changed
-        if not line_duty_changed and not hts_changed and not transport_changed:
+        if (
+            not line_duty_changed
+            and not gross_weight_changed
+            and not hts_changed
+            and not transport_changed
+        ):
             continue
 
         target = targets.get((line.page, line.line_no))
@@ -565,6 +576,30 @@ def build_pdf_text_replacements(
                 x_max=190,
                 y=hts_y,
                 alignment="left",
+            )
+
+        if gross_weight_changed:
+            old_gross_text = quantity_text(
+                original_line.gross_weight,
+                original_line.gross_unit,
+                original_line.gross_weight,
+            )
+            new_gross_text = quantity_text(
+                line.gross_weight,
+                line.gross_unit or original_line.gross_unit,
+                original_line.gross_weight,
+            )
+            add_replacement(
+                replacements,
+                page=line.page,
+                field=f"line {line.line_no} gross weight",
+                old_value=old_gross_text,
+                new_value=new_gross_text,
+                old_text=old_gross_text,
+                new_text=new_gross_text,
+                x_min=185,
+                x_max=235,
+                y=hts_y,
             )
 
         if net_quantity_changed:
@@ -981,6 +1016,65 @@ def recalculate_payload(payload: RecalculateRequest) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Unable to recalculate: {exc}") from exc
 
+
+@app.post("/api/generate-from-excel")
+async def generate_from_excel(
+    pdf_file: UploadFile = File(...),
+    excel_file: UploadFile = File(...),
+) -> StreamingResponse:
+    if not pdf_file.filename or Path(pdf_file.filename).suffix.lower() != ".pdf":
+        raise HTTPException(status_code=400, detail="A source PDF file is required.")
+    if not excel_file.filename or Path(excel_file.filename).suffix.lower() != ".xlsx":
+        raise HTTPException(status_code=400, detail="A two-sheet .xlsx workbook is required.")
+
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    pdf_path = UPLOAD_DIR / f"{uuid4().hex}.pdf"
+    excel_path = UPLOAD_DIR / f"{uuid4().hex}.xlsx"
+    try:
+        for upload, saved_path, label in (
+            (pdf_file, pdf_path, "PDF"),
+            (excel_file, excel_path, "Excel"),
+        ):
+            with saved_path.open("wb") as output:
+                shutil.copyfileobj(upload.file, output)
+            if saved_path.stat().st_size > MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"{label} exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB upload limit.",
+                )
+
+        key = f"excel-upload|{Path(pdf_file.filename).stem}"
+        parsed = parser.parse_pdf(pdf_path, "original", key)
+        adjustment = apply_second_sheet(excel_path, parsed.lines)
+        include_hmf = bool(parsed.document.hmf_total) or any(line.hmf_amount for line in parsed.lines)
+        recalculate(parsed.document, parsed.lines, include_hmf=include_hmf)
+        validation_errors = line_validation_errors(parsed.lines, adjustment.modified_fields)
+        if validation_errors:
+            raise ValueError("; ".join(validation_errors))
+        pdf_bytes = generate_adjusted_pdf(
+            pdf_path,
+            parsed.document,
+            parsed.lines,
+            adjustment.modified_fields,
+        )
+        filename = f"{clean_filename(pdf_file.filename)}-excel-adjusted.pdf"
+        return StreamingResponse(
+            BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "X-Excel-Sheet": adjustment.sheet_name.encode("ascii", errors="replace").decode("ascii"),
+                "X-Matched-Lines": str(adjustment.matched_lines),
+                "X-Modified-Fields": str(len(adjustment.modified_fields)),
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Unable to generate PDF from Excel: {exc}") from exc
+    finally:
+        pdf_path.unlink(missing_ok=True)
+        excel_path.unlink(missing_ok=True)
 
 @app.post("/api/generate-pdf")
 def generate_pdf(payload: GeneratePdfRequest) -> StreamingResponse:

@@ -1,0 +1,104 @@
+from __future__ import annotations
+
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import unittest
+
+from openpyxl import Workbook
+
+from tools.excel_adjustment import apply_second_sheet, read_second_sheet
+from tools.excel_workflow import unique_output_path
+from web_app.app import parser
+
+
+class ExcelAdjustmentTests(unittest.TestCase):
+    def test_output_path_never_overwrites_existing_file(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "tax-bill - 自动修改.pdf"
+            output.write_bytes(b"existing")
+
+            chosen = unique_output_path(output)
+
+        self.assertEqual(chosen.name, "tax-bill - 自动修改 (2).pdf")
+
+    def make_workbook(self, path: Path) -> None:
+        workbook = Workbook()
+        workbook.active.title = "Original"
+        sheet = workbook.create_sheet("Adjusted")
+        headers = [
+            "序号",
+            "HS 产品编码",
+            "No. of Items 数量",
+            "FOB Total Value(USD) 总价",
+            "毛重（KG)",
+            "净重（KG)",
+            "毛重",
+            "净重",
+        ]
+        for column, value in enumerate(headers, start=1):
+            sheet.cell(row=4, column=column, value=value)
+        sheet.append([None] * len(headers))
+        sheet.append([1, "2222222222", 999, 110, None, None, 70, 55, 7])
+        sheet.append([2, "1111111111", 12, 24, None, None, 110, 90, 11])
+        workbook.save(path)
+
+    def test_reads_second_sheet_and_selects_populated_weight_columns(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "invoice.xlsx"
+            self.make_workbook(path)
+
+            sheet_name, records = read_second_sheet(path)
+
+        self.assertEqual(sheet_name, "Adjusted")
+        self.assertEqual(records[0].gross_weight, "70")
+        self.assertEqual(records[0].net_weight, "55")
+        self.assertEqual(records[1].quantity, "12")
+        self.assertEqual(records[1].entered_value, "24")
+
+    def test_applies_values_by_hts_and_uses_net_weight_for_kg_lines(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "invoice.xlsx"
+            self.make_workbook(path)
+            lines = [
+                parser.TaxLine(
+                    file_role="test",
+                    source_file="source.pdf",
+                    pair_key="test",
+                    page=1,
+                    line_no="001",
+                    hts="1111.11.1111",
+                    gross_weight="100",
+                    gross_unit="KG",
+                    net_quantity="10",
+                    net_unit="NO",
+                    entered_value="20",
+                ),
+                parser.TaxLine(
+                    file_role="test",
+                    source_file="source.pdf",
+                    pair_key="test",
+                    page=1,
+                    line_no="002",
+                    hts="2222.22.2222",
+                    gross_weight="60",
+                    gross_unit="KG",
+                    net_quantity="50",
+                    net_unit="KG",
+                    entered_value="100",
+                ),
+            ]
+
+            result = apply_second_sheet(path, lines)
+
+        self.assertEqual(lines[0].gross_weight, "110")
+        self.assertEqual(lines[0].net_quantity, "12")
+        self.assertEqual(lines[0].entered_value, "24")
+        self.assertEqual(lines[1].gross_weight, "70")
+        self.assertEqual(lines[1].net_quantity, "55")
+        self.assertEqual(lines[1].entered_value, "110")
+        self.assertEqual(result.matched_lines, 2)
+        self.assertEqual(len(result.modified_fields), 6)
+
+
+if __name__ == "__main__":
+    unittest.main()
