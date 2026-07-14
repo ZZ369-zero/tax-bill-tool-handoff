@@ -20,6 +20,7 @@ MPF_RATE = Decimal("0.003464")
 MPF_MIN = Decimal("33.58")
 MPF_MAX = Decimal("651.50")
 HMF_RATE = Decimal("0.00125")
+REPORTING_UNIT_PATTERN = r"[A-Z][A-Z0-9]*"
 
 
 @dataclass
@@ -827,7 +828,10 @@ def parse_main_hts_row(
     entered_rate_zone = zone_text(330, 500)
     duty_zone = zone_text(500, 590)
     if net_zone:
-        match = re.search(r"([0-9,]+(?:\.\d+)?)\s+([A-Z]+)", net_zone)
+        match = re.search(
+            rf"([0-9,]+(?:\.\d+)?)\s+({REPORTING_UNIT_PATTERN})",
+            net_zone,
+        )
         if match:
             result["net_quantity"] = match.group(1)
             result["net_unit"] = match.group(2)
@@ -846,12 +850,18 @@ def parse_main_hts_row(
     for fragment in row:
         text = normalize_spaces(fragment.text)
         if fragment.x < 150:
-            match = re.search(rf"{re.escape(hts)}\s+([0-9,]+(?:\.\d+)?)\s+([A-Z]+)", text)
+            match = re.search(
+                rf"{re.escape(hts)}\s+([0-9,]+(?:\.\d+)?)\s+({REPORTING_UNIT_PATTERN})",
+                text,
+            )
             if match:
                 result["gross_weight"] = match.group(1)
                 result["gross_unit"] = match.group(2)
         if 235 <= fragment.x <= 335:
-            match = re.search(r"([0-9,]+(?:\.\d+)?)\s+([A-Z]+)", text)
+            match = re.search(
+                rf"([0-9,]+(?:\.\d+)?)\s+({REPORTING_UNIT_PATTERN})",
+                text,
+            )
             if match:
                 result["net_quantity"] = match.group(1)
                 result["net_unit"] = match.group(2)
@@ -871,8 +881,8 @@ def parse_main_hts_row(
     if not result["entered_value"] or not result["rate"] or not result["duty_amount"]:
         fallback = re.search(
             rf"{re.escape(hts)}\s+"
-            r"([0-9,]+(?:\.\d+)?)\s+([A-Z]+)\s+"
-            r"([0-9,]+(?:\.\d+)?)\s+([A-Z]+)\s+"
+            rf"([0-9,]+(?:\.\d+)?)\s+({REPORTING_UNIT_PATTERN})\s+"
+            rf"([0-9,]+(?:\.\d+)?)\s+({REPORTING_UNIT_PATTERN})\s+"
             r"\$?\s*([0-9,]+(?:\.\d{2})?)\s+"
             r"(.+)",
             row_text_value,

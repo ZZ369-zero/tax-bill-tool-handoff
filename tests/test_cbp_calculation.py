@@ -44,6 +44,29 @@ def tax_document() -> object:
 
 
 class CbpCalculationTests(unittest.TestCase):
+    def test_parses_reporting_unit_with_digit_from_hts_row(self) -> None:
+        text = "7007.19.0000 157 KG 39.44 M2 $3,200 5% $160.00"
+        row = [
+            parser.TextFragment(
+                page=2,
+                x=67.0,
+                y=600.0,
+                size=9.0,
+                font="/Helvetica",
+                text=text,
+            )
+        ]
+
+        parsed = parser.parse_main_hts_row(row, text, "7007.19.0000")
+
+        self.assertEqual(parsed["gross_weight"], "157")
+        self.assertEqual(parsed["gross_unit"], "KG")
+        self.assertEqual(parsed["net_quantity"], "39.44")
+        self.assertEqual(parsed["net_unit"], "M2")
+        self.assertEqual(parsed["entered_value"], "3,200")
+        self.assertEqual(parsed["rate"], "5%")
+        self.assertEqual(parsed["duty_amount"], "160.00")
+
     def test_131_80755312_uses_whole_dollar_line_values(self) -> None:
         lines = [
             tax_line("001", "1992", "4.7%", "10%", net_quantity="400", net_unit="NO"),
