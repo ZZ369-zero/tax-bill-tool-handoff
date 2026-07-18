@@ -38,6 +38,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
+APP_VERSION = "0.1.1"
 
 
 def load_parser_module():
@@ -51,7 +52,7 @@ def load_parser_module():
 
 
 parser = load_parser_module()
-app = FastAPI(title="7501 Tax Bill Tool", version="0.1.0")
+app = FastAPI(title="7501 Tax Bill Tool", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -1043,7 +1044,11 @@ def index() -> FileResponse:
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "version": APP_VERSION,
+        "mpf_rounding": "line-aligned",
+    }
 
 
 def friendly_error_detail(action: str, exc: Exception) -> str:
