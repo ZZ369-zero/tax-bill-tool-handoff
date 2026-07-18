@@ -26,6 +26,23 @@
           <button id="parse-button" type="submit">解析</button>
         </form>
 
+        <form id="excel-form" class="upload-panel excel-panel">
+          <div class="panel-label">
+            <strong>Excel 自动生成</strong>
+            <span>原税单 + 表2</span>
+          </div>
+          <label class="file-drop compact" for="excel-pdf-file">
+            <input id="excel-pdf-file" name="pdf_file" type="file" accept="application/pdf,.pdf" />
+            <span id="excel-pdf-name">选择原始 7501 PDF</span>
+          </label>
+          <label class="file-drop compact" for="excel-file">
+            <input id="excel-file" name="excel_file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+            <span id="excel-name">选择 Sample Commercial Invoice Excel</span>
+          </label>
+          <button id="generate-excel-button" class="success-button" type="submit">按 Excel 表2生成新税单</button>
+          <p class="helper-text">保留原 PDF，不覆盖原文件；浏览器会下载新税单。</p>
+        </form>
+
         <section class="control-group">
           <div class="mode-group" aria-label="运输方式">
             <button class="mode-button active" data-mode="auto" type="button">自动</button>

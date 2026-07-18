@@ -116,6 +116,27 @@ button:disabled {
   gap: 10px;
 }
 
+.excel-panel {
+  gap: 9px;
+}
+
+.panel-label {
+  display: grid;
+  gap: 3px;
+}
+
+.panel-label strong {
+  font-size: 14px;
+}
+
+.panel-label span,
+.helper-text {
+  margin: 0;
+  color: #b6c4d6;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .mode-group {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -151,6 +172,13 @@ button:disabled {
 
 .file-drop input {
   display: none;
+}
+
+.file-drop.compact {
+  min-height: 58px;
+  justify-items: start;
+  padding: 12px;
+  overflow-wrap: anywhere;
 }
 
 .file-icon {

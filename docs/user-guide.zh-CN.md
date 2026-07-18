@@ -4,7 +4,7 @@
 
 ## 日常使用流程
 
-### 浏览器方式
+### 浏览器方式：手动检查/调整
 
 1. 启动服务：
 
@@ -23,6 +23,24 @@
 5. 修改需要调整的字段。
 6. 点击“重新计算”。
 7. 确认无校验错误后生成更新税单 PDF。
+
+### 浏览器方式：Excel 表2自动生成
+
+网页左侧的“Excel 自动生成”区域可以直接处理一份原税单和一份 Sample Commercial Invoice & Packing List：
+
+1. 选择原始 CBP 7501 PDF。
+2. 选择对应的 Sample Commercial Invoice & Packing List `.xlsx`。
+3. 点击“按 Excel 表2生成新税单”。
+4. 浏览器会下载新 PDF。
+
+这个流程会保留原始 PDF，不会覆盖原文件。后端会读取 Excel 第二个 worksheet，按 HTS 匹配税单行，并更新：
+
+- 毛重。
+- 净数量；如果税单行单位是 `KG`，优先使用 Excel 净重。
+- 申报货值。
+- duty、MPF、可选 HMF 和总金额。
+
+如果 Excel 与 PDF 无法匹配，或者原 PDF 文本位置无法安全替换，系统会停止生成并显示错误原因。
 
 ### Excel 第二张表自动生成方式
 
@@ -48,6 +66,75 @@ python .\tools\excel_workflow.py "C:\path\to\case-folder" `
   --excel "C:\path\to\invoice.xlsx" `
   --output "C:\path\to\new-tax-bill.pdf" `
   --url "https://tax-bill-tool.onrender.com"
+```
+
+### 按月份或日期批量生成
+
+你的桌面文件夹结构可以按下面这种方式处理：
+
+```text
+C:\Users\Administrator\Desktop\事项\7501
+  6月
+    6-26 A
+      131-80596740
+        131-80596740 税单.pdf
+        131-80596740-Sample Commercial Invoice & Packing List.xlsx
+```
+
+先预览，不上传、不生成文件：
+
+```powershell
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --dry-run
+```
+
+确认列表无误后执行：
+
+```powershell
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月"
+```
+
+脚本会递归查找每个 case 文件夹，要求里面有：
+
+- 一个原始税单 PDF。
+- 一个 `.xlsx`。
+
+脚本会自动排除名称包含 `副本`、`更新`、`自动修改`、`adjusted` 的 PDF，避免把已经处理过的税单当作原件。
+
+常用范围参数：
+
+```powershell
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --entry 131-80596740
+
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --entry-pattern "^131-"
+
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" `
+  --from-entry 131-80596740 `
+  --to-entry 131-80598722
+```
+
+默认输出：
+
+```text
+原税单文件名 - 自动修改.pdf
+batch_report_年月日_时分秒.csv
+```
+
+如果默认输出文件已经存在，脚本会跳过该 case，避免重复生成。需要重新生成时可以加：
+
+```powershell
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --regenerate
+```
+
+批量脚本默认调用线上网站地址 `https://tax-bill-tool.onrender.com`。如果要调用本地服务，先启动：
+
+```powershell
+python -m uvicorn web_app.app:app --host 127.0.0.1 --port 8000
+```
+
+再运行：
+
+```powershell
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --url "http://127.0.0.1:8000"
 ```
 
 ## 本地检查

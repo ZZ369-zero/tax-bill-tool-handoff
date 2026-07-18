@@ -14,6 +14,12 @@ const els = {
   fileInput: document.querySelector("#pdf-file"),
   fileName: document.querySelector("#file-name"),
   parseButton: document.querySelector("#parse-button"),
+  excelForm: document.querySelector("#excel-form"),
+  excelPdfInput: document.querySelector("#excel-pdf-file"),
+  excelPdfName: document.querySelector("#excel-pdf-name"),
+  excelInput: document.querySelector("#excel-file"),
+  excelName: document.querySelector("#excel-name"),
+  generateExcelButton: document.querySelector("#generate-excel-button"),
   includeHmf: document.querySelector("#include-hmf"),
   modeButtons: Array.from(document.querySelectorAll(".mode-button")),
   recalculateButton: document.querySelector("#recalculate-button"),
@@ -58,6 +64,7 @@ function money(value) {
 
 function setBusy(isBusy, label = "处理中") {
   els.parseButton.disabled = isBusy;
+  els.generateExcelButton.disabled = isBusy;
   els.recalculateButton.disabled = isBusy || !state.document;
   els.generatePdfButton.disabled = isBusy || !state.document || state.validationErrors.length > 0;
   els.downloadJsonButton.disabled = isBusy || !state.document;
@@ -281,6 +288,46 @@ async function parseUpload(event) {
   }
 }
 
+async function generateFromExcel(event) {
+  event.preventDefault();
+  const pdfFile = els.excelPdfInput.files[0];
+  const excelFile = els.excelInput.files[0];
+  if (!pdfFile || !excelFile) {
+    setStatus("请选择原始 PDF 和 Excel 文件");
+    return;
+  }
+
+  setBusy(true, "按 Excel 表2生成新税单中");
+  const formData = new FormData();
+  formData.append("pdf_file", pdfFile);
+  formData.append("excel_file", excelFile);
+  try {
+    const response = await fetch("/api/generate-from-excel", {
+      method: "POST",
+      body: formData,
+    });
+    if (!response.ok) {
+      throw new Error(await errorText(response));
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = responseFileName(response) || excelDownloadName(pdfFile.name);
+    link.click();
+    URL.revokeObjectURL(url);
+
+    const sheetName = response.headers.get("X-Excel-Sheet") || "表2";
+    const matchedLines = response.headers.get("X-Matched-Lines") || "-";
+    const modifiedFields = response.headers.get("X-Modified-Fields") || "-";
+    setStatus(`新税单已生成：${sheetName}，匹配 ${matchedLines} 行，修改 ${modifiedFields} 个字段`);
+  } catch (error) {
+    setStatus(error.message || "Excel 自动生成失败");
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function recalculate() {
   if (!state.document) {
     return;
@@ -357,6 +404,19 @@ async function errorText(response) {
   }
 }
 
+function responseFileName(response) {
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (encoded) {
+    return decodeURIComponent(encoded[1]);
+  }
+  const quoted = disposition.match(/filename="([^"]+)"/i);
+  if (quoted) {
+    return quoted[1];
+  }
+  return null;
+}
+
 function downloadJson() {
   if (!state.document) {
     return;
@@ -385,12 +445,26 @@ function pdfDownloadName() {
   return `${stem}-adjusted-7501.pdf`;
 }
 
+function excelDownloadName(pdfName) {
+  const stem = pdfName.replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "-").replace(/-+/g, "-") || "7501";
+  return `${stem}-excel-adjusted.pdf`;
+}
+
 els.fileInput.addEventListener("change", () => {
   const file = els.fileInput.files[0];
   els.fileName.textContent = file ? file.name : "选择 PDF";
 });
 
 els.uploadForm.addEventListener("submit", parseUpload);
+els.excelPdfInput.addEventListener("change", () => {
+  const file = els.excelPdfInput.files[0];
+  els.excelPdfName.textContent = file ? file.name : "选择原始 7501 PDF";
+});
+els.excelInput.addEventListener("change", () => {
+  const file = els.excelInput.files[0];
+  els.excelName.textContent = file ? file.name : "选择 Sample Commercial Invoice Excel";
+});
+els.excelForm.addEventListener("submit", generateFromExcel);
 for (const button of els.modeButtons) {
   button.addEventListener("click", () => setTransportMode(button.dataset.mode));
 }

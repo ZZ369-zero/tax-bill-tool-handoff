@@ -53,6 +53,13 @@ returns the uploaded file byte-for-byte. If an edited text object cannot be
 matched safely in the original PDF, generation stops instead of approximating
 the position or rebuilding the form.
 
+The sidebar also supports an Excel automation flow:
+
+1. Select the original CBP 7501 PDF.
+2. Select the two-sheet Sample Commercial Invoice & Packing List workbook.
+3. Generate a new tax bill from worksheet 2 values without overwriting the
+   original PDF.
+
 Uploaded PDFs are stored under `uploads/`, which is ignored by git.
 
 ### Local checks
@@ -126,6 +133,22 @@ python .\tools\excel_workflow.py "C:\path\to\folder" `
 ```
 
 The workbook must be saved after worksheet 2 is updated so formula results are available to the server.
+
+For monthly or date-folder batches, preview first:
+
+```powershell
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --dry-run
+```
+
+Then generate PDFs and a CSV report:
+
+```powershell
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月"
+```
+
+Use `--entry`, `--entry-pattern`, `--from-entry`, and `--to-entry` to limit the
+batch to specific entry folders. Existing `- 自动修改.pdf` outputs are skipped by
+default; pass `--regenerate` to create a new numbered output file.
 
 ### Regression fixtures
 

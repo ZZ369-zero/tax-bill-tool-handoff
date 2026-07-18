@@ -14,7 +14,7 @@ from uuid import uuid4
 
 
 DEFAULT_URL = "https://tax-bill-tool.onrender.com"
-EXCLUDED_PDF_MARKERS = ("副本", "自动修改", "adjusted")
+EXCLUDED_PDF_MARKERS = ("副本", "自动修改", "adjusted", "更新")
 
 
 def discover_file(folder: Path, suffix: str, *, original_pdf: bool = False) -> Path:
