@@ -1,0 +1,30 @@
+{
+  "sheet_name": "Adjusted",
+  "matched_lines": 2,
+  "modified_field_count": 6,
+  "document": {
+    "total_entered_value": "134.00",
+    "calculated_duty_total": "3.60",
+    "calculated_mpf_total": "33.58",
+    "calculated_other_total": "33.58",
+    "calculated_grand_total": "37.18"
+  },
+  "lines": [
+    {
+      "line_no": "001",
+      "gross_weight": "110",
+      "net_quantity": "12",
+      "entered_value": "24",
+      "calculated_duty_total": "3.60",
+      "calculated_mpf_amount": "0.08"
+    },
+    {
+      "line_no": "002",
+      "gross_weight": "70",
+      "net_quantity": "55",
+      "entered_value": "110",
+      "calculated_duty_total": "0.00",
+      "calculated_mpf_amount": "0.38"
+    }
+  ]
+}

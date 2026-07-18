@@ -10,6 +10,10 @@ uploads/
 *.rar
 *.zip
 
+# Sanitized regression fixtures are intentionally versioned.
+!tests/fixtures/
+!tests/fixtures/**
+
 # Python cache and local environment
 __pycache__/
 *.py[cod]

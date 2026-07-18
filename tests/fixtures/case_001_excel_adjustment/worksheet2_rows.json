@@ -1,0 +1,18 @@
+[
+  {
+    "sequence": 1,
+    "hts": "2222222222",
+    "quantity": 999,
+    "entered_value": 110,
+    "gross_weight": 70,
+    "net_weight": 55
+  },
+  {
+    "sequence": 2,
+    "hts": "1111111111",
+    "quantity": 12,
+    "entered_value": 24,
+    "gross_weight": 110,
+    "net_weight": 90
+  }
+]

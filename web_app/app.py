@@ -7,6 +7,7 @@ import os
 import secrets
 import shutil
 import sys
+import time
 from dataclasses import asdict, dataclass, fields, is_dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -31,8 +32,10 @@ UPLOAD_DIR = DATA_ROOT / "uploads"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 PARSER_PATH = PROJECT_ROOT / "tools" / "7501_parser.py"
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
+UPLOAD_RETENTION_SECONDS = int(os.getenv("UPLOAD_RETENTION_SECONDS", str(24 * 60 * 60)))
 APP_USERNAME = os.getenv("APP_USERNAME")
 APP_PASSWORD = os.getenv("APP_PASSWORD")
+TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 
 
 def load_parser_module():
@@ -262,6 +265,23 @@ def safe_upload_name(filename: str) -> str:
     if suffix != ".pdf":
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
     return f"{uuid4().hex}{suffix}"
+
+
+def cleanup_old_uploads(*, now: float | None = None) -> int:
+    if UPLOAD_RETENTION_SECONDS <= 0 or not UPLOAD_DIR.exists():
+        return 0
+    cutoff = (time.time() if now is None else now) - UPLOAD_RETENTION_SECONDS
+    removed = 0
+    for path in UPLOAD_DIR.iterdir():
+        if not path.is_file() or path.suffix.lower() not in TEMP_UPLOAD_SUFFIXES:
+            continue
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 def upload_path(upload_id: str | None) -> Path:
@@ -947,6 +967,48 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def friendly_error_detail(action: str, exc: Exception) -> str:
+    message = str(exc)
+    translations = (
+        (
+            "The Excel workbook must contain at least two worksheets.",
+            "Excel 文件至少需要包含两个工作表；请确认第二个工作表是已更新后的明细表。",
+        ),
+        (
+            "Unable to locate the item table in the second Excel worksheet.",
+            "无法在 Excel 第二个工作表中找到商品明细表；请检查 HTS/HS 编码、数量、FOB 总价等表头是否存在。",
+        ),
+        (
+            "No HTS item rows were found in the second Excel worksheet.",
+            "Excel 第二个工作表中没有找到有效 HTS 商品行。",
+        ),
+        (
+            "The second Excel worksheet does not contain any changes from the original PDF.",
+            "Excel 第二个工作表的数据与原始 PDF 已解析数据一致，因此没有可生成的修改。",
+        ),
+        (
+            "Unable to match Excel rows for",
+            "Excel 行无法按 HTS 与税单行匹配；请确认 HTS 编码和行项目数量是否一致。",
+        ),
+        (
+            "The original PDF text layout could not be matched exactly for",
+            "无法在原始 PDF 中安全匹配需要替换的文本位置；为避免生成错位税单，已停止生成。",
+        ),
+        (
+            "net quantity",
+            "净数量校验失败；请确认 KG 净重没有超过 KG 毛重，且数量不是负数。",
+        ),
+        (
+            "unsupported",
+            "存在当前程序暂不支持的税率或单位组合；请检查税率格式和数量单位。",
+        ),
+    )
+    for needle, friendly in translations:
+        if needle in message:
+            return f"{action}: {friendly} 原始信息：{message}"
+    return f"{action}: {message}"
+
+
 @app.get("/api/hts-lookup")
 def hts_lookup(code: str) -> dict[str, Any]:
     try:
@@ -965,6 +1027,7 @@ async def parse_upload(file: UploadFile = File(...)) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Missing file name.")
 
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    cleanup_old_uploads()
     saved_path = UPLOAD_DIR / safe_upload_name(file.filename)
     try:
         with saved_path.open("wb") as output:
@@ -993,7 +1056,7 @@ async def parse_upload(file: UploadFile = File(...)) -> dict[str, Any]:
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"Unable to parse PDF: {exc}") from exc
+        raise HTTPException(status_code=422, detail=friendly_error_detail("无法解析 PDF", exc)) from exc
 
 
 @app.post("/api/recalculate")
@@ -1014,7 +1077,7 @@ def recalculate_payload(payload: RecalculateRequest) -> dict[str, Any]:
             validation_errors=validation_errors,
         )
     except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"Unable to recalculate: {exc}") from exc
+        raise HTTPException(status_code=422, detail=friendly_error_detail("无法重新计算", exc)) from exc
 
 
 @app.post("/api/generate-from-excel")
@@ -1028,6 +1091,7 @@ async def generate_from_excel(
         raise HTTPException(status_code=400, detail="A two-sheet .xlsx workbook is required.")
 
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    cleanup_old_uploads()
     pdf_path = UPLOAD_DIR / f"{uuid4().hex}.pdf"
     excel_path = UPLOAD_DIR / f"{uuid4().hex}.xlsx"
     try:
@@ -1071,10 +1135,11 @@ async def generate_from_excel(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"Unable to generate PDF from Excel: {exc}") from exc
+        raise HTTPException(status_code=422, detail=friendly_error_detail("无法从 Excel 生成 PDF", exc)) from exc
     finally:
         pdf_path.unlink(missing_ok=True)
         excel_path.unlink(missing_ok=True)
+
 
 @app.post("/api/generate-pdf")
 def generate_pdf(payload: GeneratePdfRequest) -> StreamingResponse:
@@ -1095,4 +1160,4 @@ def generate_pdf(payload: GeneratePdfRequest) -> StreamingResponse:
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
     except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"Unable to generate PDF: {exc}") from exc
+        raise HTTPException(status_code=422, detail=friendly_error_detail("无法生成 PDF", exc)) from exc

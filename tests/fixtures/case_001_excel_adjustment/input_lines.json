@@ -1,0 +1,24 @@
+[
+  {
+    "line_no": "001",
+    "hts": "1111.11.1111",
+    "gross_weight": "100",
+    "gross_unit": "KG",
+    "net_quantity": "10",
+    "net_unit": "NO",
+    "entered_value": "20",
+    "rate": "5%",
+    "chapter_99_rates": "10%"
+  },
+  {
+    "line_no": "002",
+    "hts": "2222.22.2222",
+    "gross_weight": "60",
+    "gross_unit": "KG",
+    "net_quantity": "50",
+    "net_unit": "KG",
+    "entered_value": "100",
+    "rate": "FREE",
+    "chapter_99_rates": ""
+  }
+]

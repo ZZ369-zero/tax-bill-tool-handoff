@@ -1,0 +1,139 @@
+# 7501 Tax Bill Tool 使用与维护指南
+
+这份文档面向日常试用、交接和后续优化。部署步骤请看 `DEPLOYMENT.zh-CN.md`，代码说明请看 `README.md`。
+
+## 日常使用流程
+
+### 浏览器方式
+
+1. 启动服务：
+
+   ```powershell
+   python -m uvicorn web_app.app:app --host 127.0.0.1 --port 8000
+   ```
+
+2. 打开浏览器：
+
+   ```text
+   http://127.0.0.1:8000/
+   ```
+
+3. 上传原始 CBP 7501 PDF。
+4. 检查解析出的 header、line item、HTS、数量、金额和税费。
+5. 修改需要调整的字段。
+6. 点击“重新计算”。
+7. 确认无校验错误后生成更新税单 PDF。
+
+### Excel 第二张表自动生成方式
+
+文件夹内通常需要：
+
+- 一个原始 7501 PDF。
+- 一个包含至少两个 worksheet 的 `.xlsx`。
+- Excel 第二张表里包含 HTS/HS 编码、数量、FOB 总价、毛重、净重等列。
+
+运行：
+
+```powershell
+$env:TAX_TOOL_USERNAME="your-login-name"
+$env:TAX_TOOL_PASSWORD="your-login-password"
+python .\tools\excel_workflow.py "C:\path\to\case-folder"
+```
+
+如果文件夹里有多个 PDF 或 Excel，可以显式指定：
+
+```powershell
+python .\tools\excel_workflow.py "C:\path\to\case-folder" `
+  --pdf "C:\path\to\original.pdf" `
+  --excel "C:\path\to\invoice.xlsx" `
+  --output "C:\path\to\new-tax-bill.pdf" `
+  --url "https://tax-bill-tool.onrender.com"
+```
+
+## 本地检查
+
+每次改代码后建议运行：
+
+```powershell
+.\tools\check.ps1
+```
+
+如果是第一次配置环境，可以加上依赖安装：
+
+```powershell
+.\tools\check.ps1 -InstallDependencies
+```
+
+这个脚本会：
+
+- 运行全部 unittest。
+- 检查 FastAPI 应用可被正常导入。
+- 检查 `/api/health` 对应的健康函数返回正常。
+
+## 测试样本维护
+
+`uploads/` 是临时上传目录，不适合放长期测试样本，也不会提交到 GitHub。
+
+`tests/fixtures/` 是固定脱敏样本目录。只有这些情况才建议新增样本：
+
+- 发现一种新的 7501 PDF 版式。
+- 发现一种新的 Excel 第二张表格式。
+- 修复了一个重要 bug，需要防止以后复发。
+- 需要覆盖特殊税率、Chapter 99、KG/NO 单位、MPF/HMF 等边界场景。
+
+推荐结构：
+
+```text
+tests/fixtures/
+  case_001_excel_adjustment/
+    input_lines.json
+    worksheet2_rows.json
+    expected.json
+
+  case_002_real_7501_layout/
+    original.pdf
+    invoice.xlsx
+    expected.json
+```
+
+提交真实业务样本前必须脱敏：
+
+- 替换公司名、地址、联系人、电话、邮箱。
+- 替换 Entry No、Invoice No、客户编号等识别信息。
+- 保留字段位置、页数、行数、金额格式、单位格式和 HTS 格式。
+- 如果金额被替换，需要同步更新 `expected.json`。
+
+## 常见错误排查
+
+### Excel 无法匹配税单行
+
+通常原因：
+
+- Excel 第二张表 HTS 与 PDF 税单 HTS 不一致。
+- Excel 行数少于 PDF line items。
+- HTS 有隐藏空格或格式被 Excel 自动改成数字。
+
+建议：
+
+- 把 HTS 列设置为文本格式。
+- 确认 10 位 HTS 数字完整。
+- 对照导出的 JSON 检查 PDF 解析出的 HTS。
+
+### 无法安全生成 PDF
+
+程序只替换原 PDF 中能精确定位的文本对象。如果原 PDF 版式特殊、文本被拆碎、字体不支持，程序会停止生成，避免输出错位税单。
+
+建议：
+
+- 保留这份 PDF 的脱敏版本。
+- 添加到 `tests/fixtures/` 作为新 case。
+- 再针对该版式优化解析或替换规则。
+
+### KG 净重超过毛重
+
+程序会阻止 `KG` 净数量大于 `KG` 毛重的修改。这通常表示 Excel 列选错、单位理解错误，或源表公式结果未刷新。
+
+建议：
+
+- 确认 Excel 已保存，公式结果可被读取。
+- 检查毛重/净重列是否为 item-level 总重，而不是单箱或单件重量。

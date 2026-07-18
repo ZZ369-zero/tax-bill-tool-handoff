@@ -1,6 +1,7 @@
 # 7501 Tax Bill Tool Prototype
 
-中文上线步骤见 [`DEPLOYMENT.zh-CN.md`](DEPLOYMENT.zh-CN.md)。
+中文上线步骤见 [`DEPLOYMENT.zh-CN.md`](DEPLOYMENT.zh-CN.md)，日常使用与维护流程见
+[`docs/user-guide.zh-CN.md`](docs/user-guide.zh-CN.md)。
 
 This workspace contains a local prototype for parsing CBP 7501 PDF files from a
 folder of original and manually adjusted copies.
@@ -53,6 +54,21 @@ matched safely in the original PDF, generation stops instead of approximating
 the position or rebuilding the form.
 
 Uploaded PDFs are stored under `uploads/`, which is ignored by git.
+
+### Local checks
+
+Run the same unittest suite used by GitHub Actions, plus a lightweight app
+health import check:
+
+```powershell
+.\tools\check.ps1
+```
+
+On a fresh machine, install dependencies first:
+
+```powershell
+.\tools\check.ps1 -InstallDependencies
+```
 
 ### CBP calculation rules
 
@@ -110,6 +126,18 @@ python .\tools\excel_workflow.py "C:\path\to\folder" `
 ```
 
 The workbook must be saved after worksheet 2 is updated so formula results are available to the server.
+
+### Regression fixtures
+
+Use `tests/fixtures/` for small, sanitized, versioned samples that should remain
+stable across future parser and PDF-generation changes. Do not place daily real
+business uploads there. Routine uploaded files still belong in `uploads/`, which
+is ignored by git.
+
+Add a new fixture only when it captures a reusable case: a new 7501 layout, a
+new Excel worksheet format, a fixed bug, or an edge case such as Chapter 99,
+KG/NO unit handling, MPF, or HMF.
+
 ### Batch parser
 
 ```powershell
