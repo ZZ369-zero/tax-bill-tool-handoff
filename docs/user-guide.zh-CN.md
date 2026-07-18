@@ -65,8 +65,11 @@ python .\tools\excel_workflow.py "C:\path\to\case-folder" `
   --pdf "C:\path\to\original.pdf" `
   --excel "C:\path\to\invoice.xlsx" `
   --output "C:\path\to\new-tax-bill.pdf" `
-  --url "https://tax-bill-tool.onrender.com"
+  --url "https://tax-bill-tool.onrender.com" `
+  --transport-mode auto
 ```
+
+`--transport-mode auto` 表示按原始税单自动识别：原单有 `501-HMF` 就按新申报货值重新计算，原单没有 `501-HMF` 就不生成 HMF。日常批量建议统一使用这个模式；只有明确需要纠正原始模板时，再手动指定 `ocean` 或 `air`。
 
 ### 按月份或日期批量生成
 
@@ -84,21 +87,21 @@ C:\Users\Administrator\Desktop\事项\7501
 先预览，不上传、不生成文件：
 
 ```powershell
-python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --dry-run
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --transport-mode auto --dry-run
 ```
 
 确认列表无误后执行：
 
 ```powershell
-python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月"
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --transport-mode auto
 ```
 
 建议第一次正式处理先缩小到 10 个 case：
 
 ```powershell
-python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --limit 10 --dry-run
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --limit 10 --transport-mode auto --dry-run
 
-python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --limit 10
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --limit 10 --transport-mode auto
 ```
 
 脚本会递归查找每个 case 文件夹，要求里面有：
@@ -111,15 +114,16 @@ python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\75
 常用范围参数：
 
 ```powershell
-python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --entry 131-80596740
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --entry 131-80596740 --transport-mode auto
 
-python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --entry-pattern "^131-"
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --entry-pattern "^131-" --transport-mode auto
 
 python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" `
   --from-entry 131-80596740 `
-  --to-entry 131-80598722
+  --to-entry 131-80598722 `
+  --transport-mode auto
 
-python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --limit 10
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --limit 10 --transport-mode auto
 ```
 
 默认输出：
@@ -132,7 +136,7 @@ batch_report_年月日_时分秒.csv
 如果默认输出文件已经存在，脚本会跳过该 case，避免重复生成。需要重新生成时可以加：
 
 ```powershell
-python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --regenerate
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --transport-mode auto --regenerate
 ```
 
 批量脚本默认调用线上网站地址 `https://tax-bill-tool.onrender.com`。如果要调用本地服务，先启动：
@@ -144,7 +148,7 @@ python -m uvicorn web_app.app:app --host 127.0.0.1 --port 8000
 再运行：
 
 ```powershell
-python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --url "http://127.0.0.1:8000"
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --transport-mode auto --url "http://127.0.0.1:8000"
 ```
 
 ## 本地检查
