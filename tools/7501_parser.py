@@ -959,6 +959,57 @@ def calculate_line_amounts(line: TaxLine, *, has_hmf: bool) -> None:
         line.hmf_variance = decimal_difference(line.hmf_amount, line.calculated_hmf_amount)
 
 
+def align_line_mpf_rounding_to_total(lines: list[TaxLine], target_total: str | Decimal | None) -> None:
+    """Distribute only penny-level MPF rounding residuals across line amounts.
+
+    The 499-MPF summary is calculated from the document entered value, while line
+    MPF values are rounded line-by-line. Those two valid calculations can differ
+    by a penny. For PDF consistency, adjust the line(s) with the largest rounding
+    residual so the displayed line MPF amounts sum back to the 499-MPF summary.
+    Larger differences from MPF minimum/maximum caps are intentionally left
+    untouched instead of allocating a document-level cap across product lines.
+    """
+
+    target = parse_decimal(target_total)
+    if target is None:
+        return
+
+    candidates: list[tuple[TaxLine, Decimal, Decimal, Decimal, str]] = []
+    for line in lines:
+        amount = parse_decimal(line.calculated_mpf_amount)
+        entered_value = cbp_entered_value(line.entered_value)
+        if amount is None or entered_value is None:
+            continue
+        rounded_raw = money_round(entered_value * MPF_RATE)
+        residual = rounded_raw - (entered_value * MPF_RATE)
+        candidates.append((line, amount, residual, entered_value, str(line.line_no or "")))
+    if not candidates:
+        return
+
+    current_total = sum((amount for _, amount, _, _, _ in candidates), Decimal("0"))
+    difference = money_round(target - current_total)
+    if difference == 0:
+        return
+
+    penny_count = int((abs(difference) / MONEY_QUANT).to_integral_value(rounding=ROUND_HALF_UP))
+    if penny_count > len(candidates):
+        return
+
+    if difference < 0:
+        ordered = sorted(candidates, key=lambda item: (item[2], item[3], item[4]), reverse=True)
+        penny = -MONEY_QUANT
+    else:
+        ordered = sorted(candidates, key=lambda item: (item[2], -item[3], item[4]))
+        penny = MONEY_QUANT
+
+    for line, amount, _, _, _ in ordered[:penny_count]:
+        adjusted = amount + penny
+        if adjusted < 0:
+            continue
+        line.calculated_mpf_amount = format_money(adjusted)
+        line.mpf_variance = decimal_difference(line.mpf_amount, line.calculated_mpf_amount)
+
+
 def sum_amounts(*values: str | None) -> str | None:
     total = Decimal("0")
     has_value = False
@@ -996,6 +1047,7 @@ def apply_calculations(parsed_files: list[ParsedFile]) -> None:
 
         if entered_total is not None:
             parsed.document.calculated_mpf_total = format_money(clamp_mpf(money_round(entered_total * MPF_RATE)))
+            align_line_mpf_rounding_to_total(parsed.lines, parsed.document.calculated_mpf_total)
         parsed.document.calculated_duty_total = format_money(duty_total) if duty_total is not None else None
         parsed.document.calculated_hmf_total = format_money(hmf_total) if hmf_total is not None else None
 

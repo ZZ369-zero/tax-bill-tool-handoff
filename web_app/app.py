@@ -196,6 +196,7 @@ def recalculate(document: Any, lines: list[Any], *, include_hmf: bool) -> None:
         document.calculated_mpf_total = parser.format_money(
             parser.clamp_mpf(parser.money_round(entered_total * parser.MPF_RATE))
         )
+        parser.align_line_mpf_rounding_to_total(lines, document.calculated_mpf_total)
     document.calculated_duty_total = parser.format_money(duty_total) if duty_total is not None else None
     document.calculated_hmf_total = parser.format_money(hmf_total) if hmf_total is not None else None
 
@@ -606,22 +607,28 @@ def build_pdf_text_replacements(
         rate_changed = line_field_key(line, "rate") in modified
         hts_changed = line_field_key(line, "hts") in modified
         line_duty_changed = net_quantity_changed or entered_value_changed or rate_changed
+        target = targets.get((line.page, line.line_no))
+        if target is None:
+            raise ValueError(f"Unable to locate line {line.line_no} on page {line.page} in the original PDF")
+        original_line = target["original"]
+        mpf_changed = (
+            original_line.mpf_amount is not None
+            and line.calculated_mpf_amount is not None
+            and not values_equal(original_line.mpf_amount, line.calculated_mpf_amount)
+        )
         if (
             not line_duty_changed
             and not gross_weight_changed
             and not hts_changed
             and not transport_changed
+            and not mpf_changed
         ):
             continue
 
-        target = targets.get((line.page, line.line_no))
-        if target is None:
-            raise ValueError(f"Unable to locate line {line.line_no} on page {line.page} in the original PDF")
-        original_line = target["original"]
         hts_y = target.get("hts_y")
         entered_changed_any = entered_changed_any or entered_value_changed
         duty_changed_any = duty_changed_any or line_duty_changed
-        other_changed_any = other_changed_any or entered_value_changed
+        other_changed_any = other_changed_any or entered_value_changed or mpf_changed
 
         if hts_changed:
             add_replacement(
@@ -726,23 +733,24 @@ def build_pdf_text_replacements(
                 y=hts_y,
             )
 
-        if entered_value_changed:
+        if entered_value_changed or mpf_changed:
             old_chapter_amounts = money_values(original_line.chapter_99_amounts)
             new_chapter_amounts = calculated_chapter_amounts(line)
             chapter_ys = target.get("chapter_ys") or []
-            for index, (old_amount, new_amount) in enumerate(zip(old_chapter_amounts, new_chapter_amounts)):
-                add_replacement(
-                    replacements,
-                    page=line.page,
-                    field=f"line {line.line_no} chapter 99 duty {index + 1}",
-                    old_value=old_amount,
-                    new_value=new_amount,
-                    old_text=format_pdf_money(old_amount),
-                    new_text=format_pdf_money(new_amount),
-                    x_min=530,
-                    x_max=590,
-                    y=chapter_ys[index] if index < len(chapter_ys) else None,
-                )
+            if entered_value_changed:
+                for index, (old_amount, new_amount) in enumerate(zip(old_chapter_amounts, new_chapter_amounts)):
+                    add_replacement(
+                        replacements,
+                        page=line.page,
+                        field=f"line {line.line_no} chapter 99 duty {index + 1}",
+                        old_value=old_amount,
+                        new_value=new_amount,
+                        old_text=format_pdf_money(old_amount),
+                        new_text=format_pdf_money(new_amount),
+                        x_min=530,
+                        x_max=590,
+                        y=chapter_ys[index] if index < len(chapter_ys) else None,
+                    )
             add_replacement(
                 replacements,
                 page=line.page,
