@@ -36,6 +36,7 @@ UPLOAD_RETENTION_SECONDS = int(os.getenv("UPLOAD_RETENTION_SECONDS", str(24 * 60
 APP_USERNAME = os.getenv("APP_USERNAME")
 APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
+PDF_COORDINATE_TOLERANCE = 0.5
 
 
 def load_parser_module():
@@ -895,23 +896,41 @@ def apply_page_replacements(
         x = float(current_tm[4])
         y = float(current_tm[5])
         old_text = str(operands[0])
+        current_text = old_text
         for replacement in pending:
             y_matches = replacement.y is None or abs(y - replacement.y) <= replacement.y_tolerance
             if (
-                old_text != replacement.old_text
-                or not replacement.x_min <= x <= replacement.x_max
+                current_text != replacement.old_text
+                or not replacement.x_min - PDF_COORDINATE_TOLERANCE <= x <= replacement.x_max + PDF_COORDINATE_TOLERANCE
                 or not y_matches
             ):
                 continue
             if replacement.alignment == "right":
                 font_name = page_font_name(page, current_font)
-                right_edge = x + pdfmetrics.stringWidth(old_text, font_name, current_size)
+                right_edge = x + pdfmetrics.stringWidth(current_text, font_name, current_size)
                 new_width = pdfmetrics.stringWidth(replacement.new_text, font_name, current_size)
                 current_tm[4] = FloatObject(right_edge - new_width)
             operands[0] = TextStringObject(replacement.new_text)
             pending.remove(replacement)
             applied.append(replacement)
             break
+        else:
+            row_applied: list[PdfTextReplacement] = []
+            for replacement in list(pending):
+                y_matches = replacement.y is not None and abs(y - replacement.y) <= replacement.y_tolerance
+                if (
+                    not replacement.field.startswith("line ")
+                    or not y_matches
+                    or replacement.old_text not in current_text
+                    or not parser.re.match(r"^\s*\d{4}\.\d{2}\.\d{4}", current_text)
+                ):
+                    continue
+                current_text = current_text.replace(replacement.old_text, replacement.new_text, 1)
+                pending.remove(replacement)
+                row_applied.append(replacement)
+            if row_applied:
+                operands[0] = TextStringObject(current_text)
+                applied.extend(row_applied)
 
     if applied:
         page.replace_contents(content)

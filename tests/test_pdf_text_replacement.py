@@ -27,6 +27,22 @@ class PdfTextReplacementTests(unittest.TestCase):
         pdf.save()
         path.write_bytes(buffer.getvalue())
 
+    def make_combined_line_pdf(self, path: Path) -> None:
+        buffer = BytesIO()
+        pdf = canvas.Canvas(buffer, pagesize=(612, 792))
+        pdf.setFont("Helvetica", 9)
+        pdf.drawString(67, 398, "3924.90.5650 2,048 KG 3,021.00 NO $1,511 3.4% $51.37")
+        pdf.save()
+        path.write_bytes(buffer.getvalue())
+
+    def make_near_boundary_pdf(self, path: Path) -> None:
+        buffer = BytesIO()
+        pdf = canvas.Canvas(buffer, pagesize=(612, 792))
+        pdf.setFont("Helvetica", 9)
+        pdf.drawString(184.98, 398, "2,048 KG")
+        pdf.save()
+        path.write_bytes(buffer.getvalue())
+
     def test_replaces_only_targeted_text_object(self) -> None:
         with TemporaryDirectory() as temp_dir:
             source = Path(temp_dir) / "source.pdf"
@@ -69,6 +85,71 @@ class PdfTextReplacementTests(unittest.TestCase):
             modified_fields=[],
         )
         self.assertEqual(replacements, [])
+
+    def test_replaces_field_inside_combined_line_text_object(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.pdf"
+            output = Path(temp_dir) / "output.pdf"
+            self.make_combined_line_pdf(source)
+
+            writer = PdfWriter(clone_from=str(source))
+            replacements = [
+                PdfTextReplacement(
+                    page=1,
+                    field="line 001 gross weight",
+                    old_text="2,048 KG",
+                    new_text="2,087 KG",
+                    x_min=185,
+                    x_max=235,
+                    y=398,
+                ),
+                PdfTextReplacement(
+                    page=1,
+                    field="line 001 entered value",
+                    old_text="$1,511",
+                    new_text="$3,414",
+                    x_min=350,
+                    x_max=398,
+                    y=398,
+                ),
+            ]
+
+            applied = apply_page_replacements(writer.pages[0], writer, replacements)
+            with output.open("wb") as stream:
+                writer.write(stream)
+
+            text = PdfReader(str(output)).pages[0].extract_text()
+            self.assertEqual(applied, replacements)
+            self.assertIn("2,087 KG", text)
+            self.assertIn("$3,414", text)
+            self.assertNotIn("2,048 KG", text)
+            self.assertNotIn("$1,511", text)
+
+    def test_replaces_text_slightly_outside_coordinate_boundary(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.pdf"
+            output = Path(temp_dir) / "output.pdf"
+            self.make_near_boundary_pdf(source)
+
+            writer = PdfWriter(clone_from=str(source))
+            replacement = PdfTextReplacement(
+                page=1,
+                field="line 001 gross weight",
+                old_text="2,048 KG",
+                new_text="2,087 KG",
+                x_min=185,
+                x_max=235,
+                y=398,
+            )
+
+            applied = apply_page_replacements(writer.pages[0], writer, [replacement])
+            with output.open("wb") as stream:
+                writer.write(stream)
+
+            text = PdfReader(str(output)).pages[0].extract_text()
+            self.assertEqual(applied, [replacement])
+            self.assertIn("2,087 KG", text)
+            self.assertNotIn("2,048 KG", text)
 
 
 if __name__ == "__main__":

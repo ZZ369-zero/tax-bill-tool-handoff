@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from types import SimpleNamespace
+from urllib.error import HTTPError
 
-from tools.batch_excel_workflow import candidate_folders, resolve_case
+from tools.batch_excel_workflow import candidate_folders, error_detail, resolve_case
 from tools.excel_workflow import discover_file
 
 
@@ -50,6 +52,17 @@ class BatchExcelWorkflowTests(unittest.TestCase):
 
         self.assertEqual(case.entry, "131-80596740")
         self.assertEqual(case.output_path.name, "131-80596740 税单 - 自动修改.pdf")
+
+    def test_empty_http_error_detail_falls_back_to_status(self) -> None:
+        exc = HTTPError(
+            url="https://example.test",
+            code=401,
+            msg="Unauthorized",
+            hdrs=None,
+            fp=BytesIO(b""),
+        )
+
+        self.assertEqual(error_detail(exc), "HTTP 401 Unauthorized")
 
 
 if __name__ == "__main__":

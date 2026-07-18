@@ -158,10 +158,14 @@ def error_detail(exc: BaseException) -> str:
     if isinstance(exc, HTTPError):
         detail = exc.read().decode("utf-8", errors="replace")
         try:
-            return str(json.loads(detail).get("detail", detail))
+            parsed_detail = str(json.loads(detail).get("detail", detail))
         except json.JSONDecodeError:
-            return detail
-    return str(exc)
+            parsed_detail = detail
+        if parsed_detail:
+            return parsed_detail
+        return f"HTTP {exc.code} {exc.reason}"
+    detail = str(exc)
+    return detail or exc.__class__.__name__
 
 
 def write_report(path: Path, results: list[CaseResult]) -> None:
@@ -197,6 +201,7 @@ def main() -> int:
     parser.add_argument("--entry-pattern", help="Only process entries matching this regular expression.")
     parser.add_argument("--from-entry", help="Process entries lexically greater than or equal to this value.")
     parser.add_argument("--to-entry", help="Process entries lexically less than or equal to this value.")
+    parser.add_argument("--limit", type=int, help="Process at most this many matching case folders.")
     parser.add_argument("--output-name", help="Optional fixed output file name inside each case folder.")
     parser.add_argument("--report", help="Optional report CSV path.")
     parser.add_argument("--dry-run", action="store_true", help="List matched cases without uploading or writing PDFs.")
@@ -207,6 +212,9 @@ def main() -> int:
     )
     args = parser.parse_args()
     args.skip_existing = not args.regenerate
+    if args.limit is not None and args.limit < 1:
+        print("Batch generation failed: --limit must be greater than 0.", file=sys.stderr)
+        return 1
 
     root = Path(args.root).expanduser().resolve()
     if not root.is_dir():
@@ -225,6 +233,8 @@ def main() -> int:
         entry = entry_from_path(folder)
         if not wanted_entry(entry, args):
             continue
+        if args.limit is not None and len(results) >= args.limit:
+            break
         try:
             case = resolve_case(folder, args)
             results.append(generate_case(case, args, headers))

@@ -163,6 +163,44 @@ class ExcelAdjustmentTests(unittest.TestCase):
         self.assertEqual(result.matched_lines, 2)
         self.assertEqual(len(result.modified_fields), 6)
 
+    def test_uses_excel_quantity_divided_by_144_for_gr_lines(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "invoice.xlsx"
+            rows = [
+                {
+                    "sequence": 1,
+                    "hts": "7010902020",
+                    "quantity": 2058,
+                    "entered_value": 1234.8,
+                    "gross_weight": 404,
+                    "net_weight": 308.7,
+                }
+            ]
+            self.make_workbook_from_rows(path, rows)
+            line = parser.TaxLine(
+                file_role="test",
+                source_file="source.pdf",
+                pair_key="test",
+                page=1,
+                line_no="001",
+                hts="7010.90.2020",
+                gross_weight="404",
+                gross_unit="KG",
+                net_quantity="14.29",
+                net_unit="GR",
+                entered_value="617",
+            )
+
+            result = apply_second_sheet(path, [line])
+
+        self.assertEqual(line.net_quantity, "14.29")
+        self.assertEqual(line.entered_value, "1234.8")
+        self.assertEqual(
+            result.modified_fields,
+            ("line:1:001:entered_value",),
+        )
+        self.assertNotIn("net_quantity", "; ".join(result.changes))
+
     def test_fixture_excel_adjustment_recalculates_expected_totals(self) -> None:
         case_name = "case_001_excel_adjustment"
         line_payloads = self.load_fixture_json(case_name, "input_lines.json")

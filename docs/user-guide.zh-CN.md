@@ -93,6 +93,14 @@ python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\75
 python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月"
 ```
 
+建议第一次正式处理先缩小到 10 个 case：
+
+```powershell
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --limit 10 --dry-run
+
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --limit 10
+```
+
 脚本会递归查找每个 case 文件夹，要求里面有：
 
 - 一个原始税单 PDF。
@@ -110,6 +118,8 @@ python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\75
 python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" `
   --from-entry 131-80596740 `
   --to-entry 131-80598722
+
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --limit 10
 ```
 
 默认输出：

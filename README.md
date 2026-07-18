@@ -140,10 +140,16 @@ For monthly or date-folder batches, preview first:
 python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --dry-run
 ```
 
+For a smaller trial batch, limit the first run:
+
+```powershell
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --limit 10 --dry-run
+```
+
 Then generate PDFs and a CSV report:
 
 ```powershell
-python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月"
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --limit 10
 ```
 
 Use `--entry`, `--entry-pattern`, `--from-entry`, and `--to-entry` to limit the

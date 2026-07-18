@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 import re
 from typing import Any, BinaryIO
 
 from openpyxl import load_workbook
+
+
+GROSS_UNIT_SIZE = Decimal("144")
 
 
 @dataclass(frozen=True)
@@ -57,6 +60,28 @@ def numeric_equal(left: Any, right: Any) -> bool:
     if left_text is None or right_text is None:
         return str(left or "").strip() == str(right or "").strip()
     return Decimal(left_text) == Decimal(right_text)
+
+
+def format_decimal(number: Decimal, *, places: int | None = None) -> str:
+    if places is not None:
+        quantum = Decimal("1").scaleb(-places)
+        number = number.quantize(quantum, rounding=ROUND_HALF_UP)
+    text = format(number, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def reporting_quantity(record: ExcelLineValues, net_unit: Any) -> str | None:
+    unit = str(net_unit or "").upper()
+    if unit == "KG":
+        return record.net_weight
+    if unit == "GR":
+        quantity = decimal_text(record.quantity)
+        if quantity is None:
+            return None
+        return format_decimal(Decimal(quantity) / GROSS_UNIT_SIZE, places=2)
+    return record.quantity
 
 
 def find_header_layout(sheet: Any) -> tuple[int, dict[str, Any]]:
@@ -169,7 +194,7 @@ def apply_second_sheet(source: str | Path | BinaryIO, lines: list[Any]) -> Excel
             unmatched.append(f"line {line.line_no} HTS {line.hts}")
             continue
         record = by_hts[digits].popleft()
-        net_value = record.net_weight if str(line.net_unit or "").upper() == "KG" else record.quantity
+        net_value = reporting_quantity(record, line.net_unit)
         updates = {
             "gross_weight": record.gross_weight,
             "net_quantity": net_value,
