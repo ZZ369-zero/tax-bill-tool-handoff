@@ -14,6 +14,8 @@ class ExcelUploadUiTests(unittest.TestCase):
         self.assertIn('id="excel-form"', html)
         self.assertIn('id="excel-pdf-file"', html)
         self.assertIn('id="excel-file"', html)
+        self.assertIn('id="excel-transport-mode"', html)
+        self.assertIn("海运：计算 501-HMF", html)
         self.assertIn("按 Excel 表2生成新税单", html)
 
     def test_excel_generation_javascript_calls_api(self) -> None:
@@ -21,6 +23,7 @@ class ExcelUploadUiTests(unittest.TestCase):
 
         self.assertIn("async function generateFromExcel", script)
         self.assertIn('fetch("/api/generate-from-excel"', script)
+        self.assertIn('formData.append("transport_mode"', script)
         self.assertIn("responseFileName(response)", script)
 
 

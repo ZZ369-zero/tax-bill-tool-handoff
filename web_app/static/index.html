@@ -39,8 +39,16 @@
             <input id="excel-file" name="excel_file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
             <span id="excel-name">选择 Sample Commercial Invoice Excel</span>
           </label>
+          <label class="select-row" for="excel-transport-mode">
+            <span>运输方式 / HMF</span>
+            <select id="excel-transport-mode" name="transport_mode">
+              <option value="auto">自动识别：沿用原单 HMF 状态</option>
+              <option value="ocean">海运：计算 501-HMF</option>
+              <option value="air">空运：不计算 501-HMF</option>
+            </select>
+          </label>
           <button id="generate-excel-button" class="success-button" type="submit">按 Excel 表2生成新税单</button>
-          <p class="helper-text">保留原 PDF，不覆盖原文件；浏览器会下载新税单。</p>
+          <p class="helper-text">保留原 PDF，不覆盖原文件；海运 HMF 按新申报货值重新计算。</p>
         </form>
 
         <section class="control-group">

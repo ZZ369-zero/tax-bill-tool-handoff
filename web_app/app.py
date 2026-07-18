@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pypdf import PdfReader, PdfWriter
@@ -37,6 +37,7 @@ APP_USERNAME = os.getenv("APP_USERNAME")
 APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
+TRANSPORT_MODES = {"auto", "air", "ocean"}
 
 
 def load_parser_module():
@@ -233,6 +234,44 @@ def recalculate(document: Any, lines: list[Any], *, include_hmf: bool) -> None:
         document.grand_total,
         document.calculated_grand_total,
     )
+
+
+def normalize_transport_mode(value: str | None) -> str:
+    mode = (value or "auto").strip().lower()
+    if mode not in TRANSPORT_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail="transport_mode must be one of: auto, air, ocean.",
+        )
+    return mode
+
+
+def parsed_has_hmf(document: Any, lines: list[Any]) -> bool:
+    return bool(document.hmf_total) or any(line.hmf_amount for line in lines)
+
+
+def include_hmf_for_transport(document: Any, lines: list[Any], transport_mode: str | None) -> bool:
+    mode = normalize_transport_mode(transport_mode)
+    if mode == "ocean":
+        return True
+    if mode == "air":
+        return False
+    return parsed_has_hmf(document, lines)
+
+
+def validate_hmf_pdf_layout(*, original_has_hmf: bool, include_hmf: bool, transport_mode: str) -> None:
+    if transport_mode == "auto":
+        return
+    if include_hmf and not original_has_hmf:
+        raise ValueError(
+            "海运模式需要生成 501-HMF，但原始 7501 PDF 没有可替换的 501-HMF 栏位；"
+            "请确认原单是否为海运税单模板。"
+        )
+    if not include_hmf and original_has_hmf:
+        raise ValueError(
+            "空运模式不应包含 501-HMF，但原始 7501 PDF 已带有 501-HMF 栏位；"
+            "请确认原单是否选错运输方式。"
+        )
 
 
 def response_payload(
@@ -773,6 +812,19 @@ def build_pdf_text_replacements(
             y=241.5,
         )
     if other_changed_any:
+        if original_document.hmf_total is not None or document.calculated_hmf_total is not None:
+            add_replacement(
+                replacements,
+                page=1,
+                field="HMF summary",
+                old_value=original_document.hmf_total,
+                new_value=document.calculated_hmf_total,
+                old_text=format_pdf_money(original_document.hmf_total),
+                new_text=format_pdf_money(document.calculated_hmf_total),
+                x_min=120,
+                x_max=175,
+                y=249,
+            )
         add_replacement(
             replacements,
             page=1,
@@ -1059,7 +1111,7 @@ async def parse_upload(file: UploadFile = File(...)) -> dict[str, Any]:
             )
         key = f"upload|{Path(file.filename).stem}"
         parsed = parser.parse_pdf(saved_path, "original", key)
-        include_hmf = bool(parsed.document.hmf_total) or any(line.hmf_amount for line in parsed.lines)
+        include_hmf = parsed_has_hmf(parsed.document, parsed.lines)
         recalculate(parsed.document, parsed.lines, include_hmf=include_hmf)
         parsed.document.source_file = file.filename
         for line in parsed.lines:
@@ -1103,6 +1155,7 @@ def recalculate_payload(payload: RecalculateRequest) -> dict[str, Any]:
 async def generate_from_excel(
     pdf_file: UploadFile = File(...),
     excel_file: UploadFile = File(...),
+    transport_mode: str = Form("auto"),
 ) -> StreamingResponse:
     if not pdf_file.filename or Path(pdf_file.filename).suffix.lower() != ".pdf":
         raise HTTPException(status_code=400, detail="A source PDF file is required.")
@@ -1129,16 +1182,30 @@ async def generate_from_excel(
         key = f"excel-upload|{Path(pdf_file.filename).stem}"
         parsed = parser.parse_pdf(pdf_path, "original", key)
         adjustment = apply_second_sheet(excel_path, parsed.lines)
-        include_hmf = bool(parsed.document.hmf_total) or any(line.hmf_amount for line in parsed.lines)
+        normalized_transport_mode = normalize_transport_mode(transport_mode)
+        original_has_hmf = parsed_has_hmf(parsed.document, parsed.lines)
+        include_hmf = include_hmf_for_transport(
+            parsed.document,
+            parsed.lines,
+            normalized_transport_mode,
+        )
+        validate_hmf_pdf_layout(
+            original_has_hmf=original_has_hmf,
+            include_hmf=include_hmf,
+            transport_mode=normalized_transport_mode,
+        )
         recalculate(parsed.document, parsed.lines, include_hmf=include_hmf)
         validation_errors = line_validation_errors(parsed.lines, adjustment.modified_fields)
         if validation_errors:
             raise ValueError("; ".join(validation_errors))
+        modified_fields = list(adjustment.modified_fields)
+        if include_hmf != original_has_hmf:
+            modified_fields.append("document:transport_mode")
         pdf_bytes = generate_adjusted_pdf(
             pdf_path,
             parsed.document,
             parsed.lines,
-            adjustment.modified_fields,
+            modified_fields,
         )
         filename = f"{clean_filename(pdf_file.filename)}-excel-adjusted.pdf"
         return StreamingResponse(
@@ -1148,7 +1215,9 @@ async def generate_from_excel(
                 "Content-Disposition": f'attachment; filename="{filename}"',
                 "X-Excel-Sheet": adjustment.sheet_name.encode("ascii", errors="replace").decode("ascii"),
                 "X-Matched-Lines": str(adjustment.matched_lines),
-                "X-Modified-Fields": str(len(adjustment.modified_fields)),
+                "X-Modified-Fields": str(len(modified_fields)),
+                "X-Transport-Mode": normalized_transport_mode,
+                "X-Include-HMF": str(include_hmf).lower(),
             },
         )
     except HTTPException:

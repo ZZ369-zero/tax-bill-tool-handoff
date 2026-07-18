@@ -10,7 +10,10 @@ from typing import Any, BinaryIO
 from openpyxl import load_workbook
 
 
-GROSS_UNIT_SIZE = Decimal("144")
+REPORTING_QUANTITY_DIVISORS = {
+    "GR": Decimal("144"),
+    "K": Decimal("1000"),
+}
 
 
 @dataclass(frozen=True)
@@ -76,11 +79,11 @@ def reporting_quantity(record: ExcelLineValues, net_unit: Any) -> str | None:
     unit = str(net_unit or "").upper()
     if unit == "KG":
         return record.net_weight
-    if unit == "GR":
+    if unit in REPORTING_QUANTITY_DIVISORS:
         quantity = decimal_text(record.quantity)
         if quantity is None:
             return None
-        return format_decimal(Decimal(quantity) / GROSS_UNIT_SIZE, places=2)
+        return format_decimal(Decimal(quantity) / REPORTING_QUANTITY_DIVISORS[unit], places=2)
     return record.quantity
 
 

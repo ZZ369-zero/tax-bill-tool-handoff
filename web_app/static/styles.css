@@ -137,6 +137,23 @@ button:disabled {
   line-height: 1.45;
 }
 
+.select-row {
+  display: grid;
+  gap: 5px;
+  color: #dce7f4;
+  font-size: 12px;
+}
+
+.select-row select {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: #111827;
+  color: #dce7f4;
+  padding: 0 10px;
+}
+
 .mode-group {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

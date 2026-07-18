@@ -19,6 +19,7 @@ const els = {
   excelPdfName: document.querySelector("#excel-pdf-name"),
   excelInput: document.querySelector("#excel-file"),
   excelName: document.querySelector("#excel-name"),
+  excelTransportMode: document.querySelector("#excel-transport-mode"),
   generateExcelButton: document.querySelector("#generate-excel-button"),
   includeHmf: document.querySelector("#include-hmf"),
   modeButtons: Array.from(document.querySelectorAll(".mode-button")),
@@ -301,6 +302,7 @@ async function generateFromExcel(event) {
   const formData = new FormData();
   formData.append("pdf_file", pdfFile);
   formData.append("excel_file", excelFile);
+  formData.append("transport_mode", els.excelTransportMode.value);
   try {
     const response = await fetch("/api/generate-from-excel", {
       method: "POST",
@@ -320,7 +322,9 @@ async function generateFromExcel(event) {
     const sheetName = response.headers.get("X-Excel-Sheet") || "表2";
     const matchedLines = response.headers.get("X-Matched-Lines") || "-";
     const modifiedFields = response.headers.get("X-Modified-Fields") || "-";
-    setStatus(`新税单已生成：${sheetName}，匹配 ${matchedLines} 行，修改 ${modifiedFields} 个字段`);
+    const transportMode = response.headers.get("X-Transport-Mode") || els.excelTransportMode.value;
+    const includeHmf = response.headers.get("X-Include-HMF") === "true" ? "含 HMF" : "不含 HMF";
+    setStatus(`新税单已生成：${sheetName}，${transportMode}/${includeHmf}，匹配 ${matchedLines} 行，修改 ${modifiedFields} 个字段`);
   } catch (error) {
     setStatus(error.message || "Excel 自动生成失败");
   } finally {

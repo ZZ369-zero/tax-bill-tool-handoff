@@ -3,7 +3,14 @@ from __future__ import annotations
 from decimal import Decimal
 import unittest
 
-from web_app.app import line_field_key, line_validation_errors, parser, recalculate
+from web_app.app import (
+    include_hmf_for_transport,
+    line_field_key,
+    line_validation_errors,
+    parsed_has_hmf,
+    parser,
+    recalculate,
+)
 
 
 def tax_line(
@@ -114,6 +121,28 @@ class CbpCalculationTests(unittest.TestCase):
 
         self.assertEqual(duty, Decimal("58.70"))
         self.assertIsNone(mismatched)
+
+    def test_transport_mode_controls_hmf_calculation(self) -> None:
+        document = tax_document()
+        line = tax_line("001", "9699", "FREE", "", net_quantity="10", net_unit="K")
+
+        self.assertFalse(parsed_has_hmf(document, [line]))
+        self.assertFalse(include_hmf_for_transport(document, [line], "auto"))
+        self.assertFalse(include_hmf_for_transport(document, [line], "air"))
+        self.assertTrue(include_hmf_for_transport(document, [line], "ocean"))
+
+        recalculate(document, [line], include_hmf=True)
+
+        self.assertEqual(line.calculated_hmf_amount, "12.12")
+        self.assertEqual(document.calculated_hmf_total, "12.12")
+
+    def test_auto_transport_keeps_original_hmf_state(self) -> None:
+        document = tax_document()
+        document.hmf_total = "8.26"
+        line = tax_line("001", "9699", "FREE", "", net_quantity="10", net_unit="K")
+
+        self.assertTrue(parsed_has_hmf(document, [line]))
+        self.assertTrue(include_hmf_for_transport(document, [line], "auto"))
 
 
 if __name__ == "__main__":

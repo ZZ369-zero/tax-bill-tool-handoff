@@ -54,6 +54,8 @@ class CaseResult:
     matched_lines: str = ""
     modified_fields: str = ""
     sheet_name: str = ""
+    transport_mode: str = ""
+    include_hmf: str = ""
 
 
 def entry_from_path(path: Path) -> str:
@@ -130,7 +132,10 @@ def generate_case(case: CaseFiles, args: argparse.Namespace, headers: dict[str, 
             detail="Dry run only; no files uploaded and no output written.",
         )
 
-    body, boundary = multipart_body([("pdf_file", case.pdf_path), ("excel_file", case.excel_path)])
+    body, boundary = multipart_body(
+        [("pdf_file", case.pdf_path), ("excel_file", case.excel_path)],
+        [("transport_mode", args.transport_mode)],
+    )
     request_headers = {"Content-Type": f"multipart/form-data; boundary={boundary}", **headers}
     request = Request(
         args.url.rstrip("/") + "/api/generate-from-excel",
@@ -151,6 +156,8 @@ def generate_case(case: CaseFiles, args: argparse.Namespace, headers: dict[str, 
             matched_lines=response.headers.get("X-Matched-Lines", ""),
             modified_fields=response.headers.get("X-Modified-Fields", ""),
             sheet_name=response.headers.get("X-Excel-Sheet", ""),
+            transport_mode=response.headers.get("X-Transport-Mode", args.transport_mode),
+            include_hmf=response.headers.get("X-Include-HMF", ""),
         )
 
 
@@ -179,6 +186,8 @@ def write_report(path: Path, results: list[CaseResult]) -> None:
         "matched_lines",
         "modified_fields",
         "sheet_name",
+        "transport_mode",
+        "include_hmf",
         "detail",
     ]
     with path.open("w", newline="", encoding="utf-8-sig") as stream:
@@ -196,6 +205,12 @@ def main() -> int:
     parser.add_argument("--url", default=DEFAULT_URL, help="Tax tool base URL.")
     parser.add_argument("--username", default=os.getenv("TAX_TOOL_USERNAME"))
     parser.add_argument("--password", default=os.getenv("TAX_TOOL_PASSWORD"))
+    parser.add_argument(
+        "--transport-mode",
+        choices=("auto", "air", "ocean"),
+        default="auto",
+        help="HMF handling: auto keeps the original PDF's HMF state, ocean calculates 501-HMF, air excludes it.",
+    )
     parser.add_argument("--timeout", type=int, default=240)
     parser.add_argument("--entry", action="append", help="Only process this entry number. Can be repeated.")
     parser.add_argument("--entry-pattern", help="Only process entries matching this regular expression.")

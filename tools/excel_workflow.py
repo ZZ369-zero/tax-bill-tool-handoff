@@ -35,9 +35,21 @@ def discover_file(folder: Path, suffix: str, *, original_pdf: bool = False) -> P
     return candidates[0]
 
 
-def multipart_body(files: list[tuple[str, Path]]) -> tuple[bytes, str]:
+def multipart_body(
+    files: list[tuple[str, Path]],
+    fields: list[tuple[str, str]] | None = None,
+) -> tuple[bytes, str]:
     boundary = f"----TaxBillTool{uuid4().hex}"
     chunks: list[bytes] = []
+    for field_name, value in fields or []:
+        chunks.extend(
+            [
+                f"--{boundary}\r\n".encode("ascii"),
+                f'Content-Disposition: form-data; name="{field_name}"\r\n\r\n'.encode("ascii"),
+                str(value).encode("utf-8"),
+                b"\r\n",
+            ]
+        )
     for field_name, path in files:
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         safe_name = "tax-bill.pdf" if path.suffix.lower() == ".pdf" else "invoice.xlsx"
@@ -78,6 +90,12 @@ def main() -> int:
     parser.add_argument("--url", default=DEFAULT_URL, help="Tax tool base URL.")
     parser.add_argument("--username", default=os.getenv("TAX_TOOL_USERNAME"))
     parser.add_argument("--password", default=os.getenv("TAX_TOOL_PASSWORD"))
+    parser.add_argument(
+        "--transport-mode",
+        choices=("auto", "air", "ocean"),
+        default="auto",
+        help="HMF handling: auto keeps the original PDF's HMF state, ocean calculates 501-HMF, air excludes it.",
+    )
     parser.add_argument("--timeout", type=int, default=240)
     args = parser.parse_args()
 
@@ -99,7 +117,8 @@ def main() -> int:
             password = getpass.getpass("Online tax tool password: ")
 
         body, boundary = multipart_body(
-            [("pdf_file", pdf_path), ("excel_file", excel_path)]
+            [("pdf_file", pdf_path), ("excel_file", excel_path)],
+            [("transport_mode", args.transport_mode)],
         )
         headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
         if args.username and password:
@@ -115,8 +134,11 @@ def main() -> int:
             output_path.write_bytes(response.read())
             sheet_name = response.headers.get("X-Excel-Sheet", "worksheet 2")
             change_count = response.headers.get("X-Modified-Fields", "unknown")
+            transport_mode = response.headers.get("X-Transport-Mode", args.transport_mode)
+            include_hmf = response.headers.get("X-Include-HMF", "")
         print(f"Original PDF: {pdf_path}")
         print(f"Excel workbook: {excel_path}")
+        print(f"Transport mode: {transport_mode} (HMF: {include_hmf or 'auto'})")
         print(f"Source sheet: {sheet_name}")
         print(f"Modified fields: {change_count}")
         print(f"Generated PDF: {output_path}")

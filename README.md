@@ -111,8 +111,11 @@ accounts plus an audit database before production use.
 Use the original 7501 PDF plus a two-sheet commercial invoice workbook to generate a new PDF through the deployed service. The command reads worksheet 2, matches rows to the tax form by HTS, and updates:
 
 - Gross weight from the populated item-level gross-weight column.
-- Net quantity from item quantity, or net weight when the tax-form reporting unit is `KG`.
+- Net quantity from item quantity, net weight when the tax-form reporting unit is `KG`,
+  quantity ÷ 144 for `GR`, and quantity ÷ 1,000 for `K`.
 - Entered value from the FOB total-value column.
+- 501-HMF is controlled by transport mode: `auto` keeps the original PDF's HMF
+  state, `ocean` recalculates HMF at 0.125%, and `air` excludes HMF.
 
 The original PDF is never overwritten. If the default output name already exists, the command adds `(2)`, `(3)`, and so on.
 
@@ -129,7 +132,8 @@ python .\tools\excel_workflow.py "C:\path\to\folder" `
   --pdf "C:\path\to\original.pdf" `
   --excel "C:\path\to\invoice.xlsx" `
   --output "C:\path\to\new-tax-bill.pdf" `
-  --url "https://tax-bill-tool.onrender.com"
+  --url "https://tax-bill-tool.onrender.com" `
+  --transport-mode ocean
 ```
 
 The workbook must be saved after worksheet 2 is updated so formula results are available to the server.
@@ -149,12 +153,14 @@ python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\75
 Then generate PDFs and a CSV report:
 
 ```powershell
-python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --limit 10
+python .\tools\batch_excel_workflow.py "C:\Users\Administrator\Desktop\事项\7501\7月" --limit 10 --transport-mode ocean
 ```
 
 Use `--entry`, `--entry-pattern`, `--from-entry`, and `--to-entry` to limit the
 batch to specific entry folders. Existing `- 自动修改.pdf` outputs are skipped by
 default; pass `--regenerate` to create a new numbered output file.
+Use `--transport-mode ocean` for sea shipments, `--transport-mode air` for air
+shipments, and omit the option to auto-detect from the original tax form.
 
 ### Regression fixtures
 
