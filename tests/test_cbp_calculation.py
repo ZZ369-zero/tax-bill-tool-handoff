@@ -144,7 +144,7 @@ class CbpCalculationTests(unittest.TestCase):
         self.assertTrue(parsed_has_hmf(document, [line]))
         self.assertTrue(include_hmf_for_transport(document, [line], "auto"))
 
-    def test_line_mpf_penny_adjustment_matches_document_mpf_total(self) -> None:
+    def test_document_mpf_uses_sum_of_rounded_line_item_mpf_records(self) -> None:
         lines = [
             tax_line("001", "1452", "FREE", "", net_quantity="726", net_unit="NO"),
             tax_line("002", "683", "FREE", "", net_quantity="650", net_unit="NO"),
@@ -162,9 +162,9 @@ class CbpCalculationTests(unittest.TestCase):
             for line in lines
         )
 
-        self.assertEqual(document.calculated_mpf_total, "40.60")
-        self.assertEqual(line_mpf_total, Decimal("40.60"))
-        self.assertEqual(lines[1].calculated_mpf_amount, "2.36")
+        self.assertEqual(document.calculated_mpf_total, "40.61")
+        self.assertEqual(line_mpf_total, Decimal("40.61"))
+        self.assertEqual(lines[1].calculated_mpf_amount, "2.37")
 
 
 if __name__ == "__main__":

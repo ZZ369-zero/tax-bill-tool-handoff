@@ -85,8 +85,8 @@ On a fresh machine, install dependencies first:
   to cents before line and document totals are summed.
 - Formal-entry MPF is `0.3464%`, subject to the configured fiscal-year minimum
   and maximum. HMF is `0.125%` only when applicable to the vessel movement.
-- Penny-level MPF rounding residuals are allocated back to line MPF amounts so
-  line totals match the document-level `499 - MPF` summary.
+- `499 - MPF` is calculated from the sum of rounded line-item MPF records, then
+  the formal-entry minimum and maximum are applied.
 - A modified `KG` net quantity cannot exceed the line's `KG` gross weight.
 - USITC lookup suggestions do not replace a broker or binding CBP classification
   ruling. Chapter 99 applicability still requires country, date, program, and

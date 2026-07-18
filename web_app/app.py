@@ -38,7 +38,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.1.2"
 
 
 def load_parser_module():
@@ -191,13 +191,15 @@ def recalculate(document: Any, lines: list[Any], *, include_hmf: bool) -> None:
         parser.calculate_line_amounts(line, has_hmf=include_hmf)
 
     duty_total = parser.sum_decimal_field(lines, "calculated_duty_total")
+    mpf_line_total = parser.sum_decimal_field(lines, "calculated_mpf_amount")
     hmf_total = parser.sum_decimal_field(lines, "calculated_hmf_amount") if include_hmf else None
 
-    if entered_total is not None:
+    if mpf_line_total is not None:
+        document.calculated_mpf_total = parser.format_money(parser.clamp_mpf(mpf_line_total))
+    elif entered_total is not None:
         document.calculated_mpf_total = parser.format_money(
             parser.clamp_mpf(parser.money_round(entered_total * parser.MPF_RATE))
         )
-        parser.align_line_mpf_rounding_to_total(lines, document.calculated_mpf_total)
     document.calculated_duty_total = parser.format_money(duty_total) if duty_total is not None else None
     document.calculated_hmf_total = parser.format_money(hmf_total) if hmf_total is not None else None
 
@@ -1047,7 +1049,7 @@ def health() -> dict[str, str]:
     return {
         "status": "ok",
         "version": APP_VERSION,
-        "mpf_rounding": "line-aligned",
+        "mpf_rounding": "line-sum",
     }
 
 
