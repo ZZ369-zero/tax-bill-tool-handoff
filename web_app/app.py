@@ -21,6 +21,7 @@ from pypdf import PdfReader, PdfWriter
 from pypdf.generic import ContentStream, FloatObject, TextStringObject
 from pydantic import BaseModel, Field
 from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfgen import canvas
 
 from tools.excel_adjustment import apply_second_sheet
 from tools.hts_lookup import lookup_hts
@@ -38,7 +39,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.2"
+APP_VERSION = "0.1.3"
 
 
 def load_parser_module():
@@ -382,7 +383,10 @@ def values_equal(left: Any, right: Any) -> bool:
 def quantity_text(value: Any, unit: Any, original_value: Any) -> str:
     decimal_value = parser.parse_decimal(value)
     original = display(original_value).replace(",", "")
-    decimals = len(original.rsplit(".", 1)[1]) if "." in original else 0
+    value_text = display(value).replace(",", "")
+    original_decimals = len(original.rsplit(".", 1)[1]) if "." in original else 0
+    value_decimals = len(value_text.rsplit(".", 1)[1]) if "." in value_text else 0
+    decimals = max(original_decimals, value_decimals)
     if decimal_value is None:
         number = display(value)
     elif decimals:
@@ -426,8 +430,6 @@ def add_replacement(
 ) -> None:
     if values_equal(old_value, new_value):
         return
-    if not old_text:
-        raise ValueError(f"{field}: original text is empty")
     replacements.append(
         PdfTextReplacement(
             page=page,
@@ -1000,6 +1002,35 @@ def apply_page_replacements(
     return applied
 
 
+def overlay_page_replacements(page: Any, replacements: list[PdfTextReplacement]) -> list[PdfTextReplacement]:
+    drawable = [replacement for replacement in replacements if replacement.y is not None]
+    if not drawable:
+        return []
+
+    width = float(page.mediabox.width)
+    height = float(page.mediabox.height)
+    packet = BytesIO()
+    overlay = canvas.Canvas(packet, pagesize=(width, height))
+    overlay.setFont("Helvetica", 8)
+    for replacement in sorted(drawable, key=lambda item: item.x_min, reverse=True):
+        y = float(replacement.y or 0)
+        x_min = float(replacement.x_min)
+        x_max = float(replacement.x_max)
+        overlay.setFillColorRGB(1, 1, 1)
+        overlay.rect(x_min - 2, y - 2, (x_max - x_min) + 4, 10, stroke=0, fill=1)
+        overlay.setFillColorRGB(0, 0, 0)
+        overlay.setFont("Helvetica", 8)
+        if replacement.alignment == "right":
+            overlay.drawRightString(x_max, y, replacement.new_text)
+        else:
+            overlay.drawString(x_min, y, replacement.new_text)
+    overlay.save()
+    packet.seek(0)
+    overlay_page = PdfReader(packet).pages[0]
+    page.merge_page(overlay_page)
+    return drawable
+
+
 def template_preserving_pdf(
     original_path: Path,
     document: Any,
@@ -1015,7 +1046,11 @@ def template_preserving_pdf(
     for page_number, page in enumerate(writer.pages, start=1):
         page_replacements = [item for item in replacements if item.page == page_number]
         if page_replacements:
-            applied.extend(apply_page_replacements(page, writer, page_replacements))
+            page_applied = apply_page_replacements(page, writer, page_replacements)
+            applied.extend(page_applied)
+            page_missing = [item for item in page_replacements if item not in page_applied]
+            if page_missing:
+                applied.extend(overlay_page_replacements(page, page_missing))
 
     missing = [item.field for item in replacements if item not in applied]
     if missing:
@@ -1050,6 +1085,8 @@ def health() -> dict[str, str]:
         "status": "ok",
         "version": APP_VERSION,
         "mpf_rounding": "line-sum",
+        "worksheet_matching": "best-hts-match",
+        "kg_quantity": "item-size-aware",
     }
 
 

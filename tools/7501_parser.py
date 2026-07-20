@@ -915,8 +915,88 @@ def parse_pdf(path: Path, file_role: str, key: str) -> ParsedFile:
     fragments = extract_fragments(reader)
     document = parse_header_document(path, file_role, key, reader, text, fragments)
     lines = parse_lines(path, file_role, key, document.entry_number, fragments)
+    apply_text_line_fallback(lines, text)
     document.line_count = len(lines)
     return ParsedFile(document=document, lines=lines)
+
+
+def line_text_blocks(text: str) -> dict[str, str]:
+    blocks: dict[str, str] = {}
+    pattern = re.compile(
+        r"(?ms)(?:^|\n)(\d{3})\s+(.+?)(?=\n(?!499\b|501\b)\d{3}\s+|\nTotals for Invoice|\nCBP Form 7501|\Z)"
+    )
+    for match in pattern.finditer(text):
+        blocks[match.group(1)] = match.group(2)
+    return blocks
+
+
+def apply_text_line_fallback(lines: list[TaxLine], text: str) -> None:
+    blocks = line_text_blocks(text)
+    for line in lines:
+        block = blocks.get(str(line.line_no or ""))
+        if not block:
+            continue
+        hts_match = re.search(r"\b(\d{4}\.\d{2}\.\d{4})\b", block)
+        if hts_match and not line.hts:
+            line.hts = hts_match.group(1)
+
+        chapter_matches = re.findall(
+            r"\b(99\d{2}\.\d{2}\.\d{2})\b\s+(FREE|[0-9.]+%)\s+\$?\s*([0-9,]+(?:\.\d{1,2})?)",
+            block,
+        )
+        has_chapter_rates = any(item.strip() for item in (line.chapter_99_rates or "").split(";"))
+        has_chapter_amounts = any(item.strip() for item in (line.chapter_99_amounts or "").split(";"))
+        if chapter_matches and (not line.chapter_99_codes or not has_chapter_rates or not has_chapter_amounts):
+            line.chapter_99_codes = "; ".join(item[0] for item in chapter_matches)
+            line.chapter_99_rates = "; ".join(item[1] for item in chapter_matches)
+            line.chapter_99_amounts = "; ".join(item[2] for item in chapter_matches)
+
+        hts = line.hts or (hts_match.group(1) if hts_match else None)
+        if hts:
+            main_match = re.search(
+                rf"{re.escape(hts)}\s+\$?\s*([0-9,]+(?:\.\d+)?)\s+(FREE|[0-9.]+%)"
+                rf"(.*?)(?:\n|$)",
+                block,
+            )
+            if main_match:
+                if not line.entered_value:
+                    line.entered_value = main_match.group(1)
+                if not line.rate:
+                    line.rate = main_match.group(2)
+                tail = main_match.group(3)
+                duty_match = re.search(r"\$\s*([0-9,]+(?:\.\d{1,2})?)\s*$", tail)
+                if duty_match and not line.duty_amount:
+                    line.duty_amount = duty_match.group(1)
+                if "KG" in tail.upper():
+                    line.gross_unit = line.gross_unit or "KG"
+                    line.net_unit = line.net_unit or "KG"
+                quantity_matches = re.findall(
+                    rf"([0-9,]+(?:\.\d+)?)\s*({REPORTING_UNIT_PATTERN})",
+                    tail,
+                )
+                if len(quantity_matches) >= 2:
+                    if not line.gross_weight:
+                        line.gross_weight = quantity_matches[-2][0]
+                        line.gross_unit = quantity_matches[-2][1]
+                    if not line.net_quantity:
+                        line.net_quantity = quantity_matches[-1][0]
+                        line.net_unit = quantity_matches[-1][1]
+
+        mpf_match = re.search(
+            r"499\s*-\s*Merchandise Processing Fee\s+([0-9.]+%)\s+\$?\s*([0-9,]+(?:\.\d{1,2})?)",
+            block,
+        )
+        if mpf_match:
+            line.mpf_rate = line.mpf_rate or mpf_match.group(1)
+            line.mpf_amount = line.mpf_amount or mpf_match.group(2)
+
+        hmf_match = re.search(
+            r"501\s*-\s*Harbor Maintenance Fee\s+([0-9.]+%)\s+\$?\s*([0-9,]+(?:\.\d{1,2})?)",
+            block,
+        )
+        if hmf_match:
+            line.hmf_rate = line.hmf_rate or hmf_match.group(1)
+            line.hmf_amount = line.hmf_amount or hmf_match.group(2)
 
 
 def calculate_line_amounts(line: TaxLine, *, has_hmf: bool) -> None:

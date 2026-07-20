@@ -50,8 +50,13 @@ class ExcelAdjustmentTests(unittest.TestCase):
         workbook = Workbook()
         workbook.active.title = "Original"
         sheet = workbook.create_sheet("Adjusted")
+        self.populate_item_sheet(sheet, rows)
+        workbook.save(path)
+
+    def populate_item_sheet(self, sheet: object, rows: list[dict[str, object]]) -> None:
         headers = [
             "序号",
+            "Full Description Of Goods",
             "HS 产品编码",
             "No. of Items 数量",
             "FOB Total Value(USD) 总价",
@@ -65,6 +70,7 @@ class ExcelAdjustmentTests(unittest.TestCase):
             sheet.append(
                 [
                     row["sequence"],
+                    row.get("description", ""),
                     row["hts"],
                     row["quantity"],
                     row["entered_value"],
@@ -72,7 +78,6 @@ class ExcelAdjustmentTests(unittest.TestCase):
                     row["net_weight"],
                 ]
             )
-        workbook.save(path)
 
     def load_fixture_json(self, case_name: str, file_name: str) -> object:
         path = FIXTURES_DIR / case_name / file_name
@@ -163,6 +168,84 @@ class ExcelAdjustmentTests(unittest.TestCase):
         self.assertEqual(result.matched_lines, 2)
         self.assertEqual(len(result.modified_fields), 6)
 
+    def test_applies_values_from_worksheet_matching_pdf_hts_lines(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "invoice.xlsx"
+            workbook = Workbook()
+            workbook.active.title = "A"
+            self.populate_item_sheet(
+                workbook.active,
+                [
+                    {
+                        "sequence": 1,
+                        "hts": "3304100000",
+                        "quantity": 288,
+                        "entered_value": 688,
+                        "gross_weight": 44,
+                        "net_weight": 35,
+                    },
+                    {
+                        "sequence": 2,
+                        "hts": "3304100000",
+                        "quantity": 1296,
+                        "entered_value": 3097,
+                        "gross_weight": 198,
+                        "net_weight": 158,
+                    },
+                ],
+            )
+            sheet_b = workbook.create_sheet("B")
+            self.populate_item_sheet(
+                sheet_b,
+                [
+                    {
+                        "sequence": 1,
+                        "hts": "8301403000",
+                        "quantity": 1400,
+                        "entered_value": 840,
+                        "gross_weight": 480,
+                        "net_weight": 378,
+                    }
+                ],
+            )
+            workbook.save(path)
+            lines = [
+                parser.TaxLine(
+                    file_role="test",
+                    source_file="source.pdf",
+                    pair_key="test",
+                    page=1,
+                    line_no="001",
+                    hts="3304.10.0000",
+                    gross_weight="40",
+                    gross_unit="KG",
+                    net_quantity="30",
+                    net_unit="KG",
+                    entered_value="600",
+                ),
+                parser.TaxLine(
+                    file_role="test",
+                    source_file="source.pdf",
+                    pair_key="test",
+                    page=1,
+                    line_no="002",
+                    hts="3304.10.0000",
+                    gross_weight="180",
+                    gross_unit="KG",
+                    net_quantity="140",
+                    net_unit="KG",
+                    entered_value="3000",
+                ),
+            ]
+
+            result = apply_second_sheet(path, lines)
+
+        self.assertEqual(result.sheet_name, "A")
+        self.assertEqual(lines[0].entered_value, "688")
+        self.assertEqual(lines[1].entered_value, "3097")
+        self.assertEqual(lines[0].net_quantity, "35")
+        self.assertEqual(lines[1].net_quantity, "158")
+
     def test_uses_excel_quantity_divided_by_144_for_gr_lines(self) -> None:
         with TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "invoice.xlsx"
@@ -238,6 +321,45 @@ class ExcelAdjustmentTests(unittest.TestCase):
             ("line:1:001:entered_value",),
         )
         self.assertNotIn("net_quantity", "; ".join(result.changes))
+
+    def test_uses_item_size_from_description_for_kg_lines(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "invoice.xlsx"
+            rows = [
+                {
+                    "sequence": 1,
+                    "description": "TIMEPHORIA LIP VINYL 001 MOONLIT CLAY 5g",
+                    "hts": "3304100000",
+                    "quantity": 288,
+                    "entered_value": 688,
+                    "gross_weight": 14.22,
+                    "net_weight": 12.22,
+                }
+            ]
+            workbook = Workbook()
+            workbook.active.title = "Original"
+            sheet = workbook.create_sheet("Adjusted")
+            self.populate_item_sheet(sheet, rows)
+            workbook.save(path)
+            line = parser.TaxLine(
+                file_role="test",
+                source_file="source.pdf",
+                pair_key="test",
+                page=1,
+                line_no="001",
+                hts="3304.10.0000",
+                gross_weight="14",
+                gross_unit="KG",
+                net_quantity="1.44",
+                net_unit="KG",
+                entered_value="688",
+            )
+
+            result = apply_second_sheet(path, [line])
+
+        self.assertEqual(line.gross_weight, "14.22")
+        self.assertEqual(line.net_quantity, "1.44")
+        self.assertEqual(result.modified_fields, ("line:1:001:gross_weight",))
 
     def test_fixture_excel_adjustment_recalculates_expected_totals(self) -> None:
         case_name = "case_001_excel_adjustment"
