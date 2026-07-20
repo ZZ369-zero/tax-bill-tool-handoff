@@ -10,6 +10,7 @@ from typing import Iterable
 
 import pandas as pd
 from pypdf import PdfReader
+from pypdf.generic import ContentStream
 
 
 MODIFIED_MARKERS = ("副本", "更新")
@@ -188,7 +189,54 @@ def build_pairs(paths: Iterable[Path]) -> list[PdfPair]:
     return pairs
 
 
-def extract_fragments(reader: PdfReader) -> list[TextFragment]:
+def content_operand_text(operands: list[object], operator: bytes) -> str:
+    if not operands:
+        return ""
+    if operator == b"TJ":
+        return "".join(str(item) for item in operands[0] if isinstance(item, str))
+    return str(operands[0])
+
+
+def extract_content_stream_fragments(reader: PdfReader) -> list[TextFragment]:
+    fragments: list[TextFragment] = []
+    for page_index, page in enumerate(reader.pages, 1):
+        current_tm: list[object] | None = None
+        current_font = ""
+        current_size = 0.0
+        try:
+            content = ContentStream(page.get_contents(), reader)
+        except Exception:
+            continue
+        for operands, operator in content.operations:
+            if operator == b"Tf":
+                current_font = str(operands[0]) if operands else ""
+                try:
+                    current_size = float(operands[1])
+                except Exception:
+                    current_size = 0.0
+                continue
+            if operator == b"Tm":
+                current_tm = operands
+                continue
+            if operator not in (b"Tj", b"TJ") or current_tm is None:
+                continue
+            clean = content_operand_text(operands, operator).replace("\x00", "")
+            if not clean.strip():
+                continue
+            fragments.append(
+                TextFragment(
+                    page=page_index,
+                    x=round(float(current_tm[4]), 2),
+                    y=round(float(current_tm[5]), 2),
+                    size=round(float(current_size), 2),
+                    font=current_font,
+                    text=clean,
+                )
+            )
+    return fragments
+
+
+def extract_visitor_fragments(reader: PdfReader) -> list[TextFragment]:
     fragments: list[TextFragment] = []
     for page_index, page in enumerate(reader.pages, 1):
         def visitor(text, cm, tm, font_dict, font_size):
@@ -211,6 +259,13 @@ def extract_fragments(reader: PdfReader) -> list[TextFragment]:
 
         page.extract_text(visitor_text=visitor)
     return fragments
+
+
+def extract_fragments(reader: PdfReader) -> list[TextFragment]:
+    content_fragments = extract_content_stream_fragments(reader)
+    if content_fragments:
+        return content_fragments
+    return extract_visitor_fragments(reader)
 
 
 def extract_text(reader: PdfReader) -> str:
@@ -824,9 +879,18 @@ def parse_main_hts_row(
         zone = [fragment for fragment in row if x_min <= fragment.x <= x_max]
         return normalize_spaces("".join(fragment.text for fragment in sorted(zone, key=lambda f: f.x)))
 
+    gross_zone = zone_text(150, 235)
     net_zone = zone_text(235, 335)
     entered_rate_zone = zone_text(330, 500)
     duty_zone = zone_text(500, 590)
+    if gross_zone:
+        match = re.search(
+            rf"([0-9,]+(?:\.\d+)?)\s+({REPORTING_UNIT_PATTERN})",
+            gross_zone,
+        )
+        if match:
+            result["gross_weight"] = match.group(1)
+            result["gross_unit"] = match.group(2)
     if net_zone:
         match = re.search(
             rf"([0-9,]+(?:\.\d+)?)\s+({REPORTING_UNIT_PATTERN})",
@@ -852,6 +916,14 @@ def parse_main_hts_row(
         if fragment.x < 150:
             match = re.search(
                 rf"{re.escape(hts)}\s+([0-9,]+(?:\.\d+)?)\s+({REPORTING_UNIT_PATTERN})",
+                text,
+            )
+            if match:
+                result["gross_weight"] = match.group(1)
+                result["gross_unit"] = match.group(2)
+        if 150 <= fragment.x <= 235:
+            match = re.search(
+                rf"([0-9,]+(?:\.\d+)?)\s+({REPORTING_UNIT_PATTERN})",
                 text,
             )
             if match:

@@ -18,7 +18,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import ContentStream, FloatObject, TextStringObject
+from pypdf.generic import ArrayObject, ContentStream, FloatObject, TextStringObject
 from pydantic import BaseModel, Field
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfgen import canvas
@@ -39,7 +39,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.3"
+APP_VERSION = "0.1.4"
 
 
 def load_parser_module():
@@ -935,6 +935,21 @@ def page_font_name(page: Any, resource_name: Any) -> str:
     return font_name
 
 
+def text_from_pdf_text_operands(operands: list[Any], operator: bytes) -> str:
+    if not operands:
+        return ""
+    if operator == b"TJ":
+        return "".join(str(item) for item in operands[0] if isinstance(item, str))
+    return str(operands[0])
+
+
+def set_pdf_text_operands(operands: list[Any], operator: bytes, value: str) -> None:
+    if operator == b"TJ":
+        operands[0] = ArrayObject([TextStringObject(value)])
+    else:
+        operands[0] = TextStringObject(value)
+
+
 def apply_page_replacements(
     page: Any,
     writer: PdfWriter,
@@ -955,12 +970,12 @@ def apply_page_replacements(
         if operator == b"Tm":
             current_tm = operands
             continue
-        if operator != b"Tj" or current_tm is None or not operands:
+        if operator not in (b"Tj", b"TJ") or current_tm is None or not operands:
             continue
 
         x = float(current_tm[4])
         y = float(current_tm[5])
-        old_text = str(operands[0])
+        old_text = text_from_pdf_text_operands(operands, operator)
         current_text = old_text
         for replacement in pending:
             y_matches = replacement.y is None or abs(y - replacement.y) <= replacement.y_tolerance
@@ -975,7 +990,7 @@ def apply_page_replacements(
                 right_edge = x + pdfmetrics.stringWidth(current_text, font_name, current_size)
                 new_width = pdfmetrics.stringWidth(replacement.new_text, font_name, current_size)
                 current_tm[4] = FloatObject(right_edge - new_width)
-            operands[0] = TextStringObject(replacement.new_text)
+            set_pdf_text_operands(operands, operator, replacement.new_text)
             pending.remove(replacement)
             applied.append(replacement)
             break
@@ -994,7 +1009,7 @@ def apply_page_replacements(
                 pending.remove(replacement)
                 row_applied.append(replacement)
             if row_applied:
-                operands[0] = TextStringObject(current_text)
+                set_pdf_text_operands(operands, operator, current_text)
                 applied.extend(row_applied)
 
     if applied:

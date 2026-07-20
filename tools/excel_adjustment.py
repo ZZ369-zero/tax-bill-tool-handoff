@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
@@ -270,11 +270,36 @@ def line_field_key(line: Any, field_name: str) -> str:
     return f"line:{line.page}:{line.line_no}:{field_name}"
 
 
+def most_common_unit(units: list[str]) -> str | None:
+    normalized = [unit.strip().upper() for unit in units if unit and unit.strip()]
+    if not normalized:
+        return None
+    return Counter(normalized).most_common(1)[0][0]
+
+
+def inferred_units_by_hts(lines: list[Any], field_name: str) -> dict[str, str]:
+    grouped: dict[str, list[str]] = defaultdict(list)
+    for line in lines:
+        digits = hts_digits(getattr(line, "hts", None))
+        unit = getattr(line, field_name, None)
+        if digits and unit:
+            grouped[digits].append(str(unit))
+    return {
+        digits: unit
+        for digits, units in grouped.items()
+        if (unit := most_common_unit(units)) is not None
+    }
+
+
 def apply_second_sheet(source: str | Path | BinaryIO, lines: list[Any]) -> ExcelAdjustmentResult:
     sheet_name, records = read_best_matching_sheet(source, lines)
     by_hts: dict[str, deque[ExcelLineValues]] = defaultdict(deque)
     for record in records:
         by_hts[record.hts].append(record)
+    gross_unit_by_hts = inferred_units_by_hts(lines, "gross_unit")
+    net_unit_by_hts = inferred_units_by_hts(lines, "net_unit")
+    default_gross_unit = most_common_unit([str(getattr(line, "gross_unit", "") or "") for line in lines])
+    default_net_unit = most_common_unit([str(getattr(line, "net_unit", "") or "") for line in lines])
 
     modified_fields: list[str] = []
     changes: list[str] = []
@@ -285,6 +310,10 @@ def apply_second_sheet(source: str | Path | BinaryIO, lines: list[Any]) -> Excel
             unmatched.append(f"line {line.line_no} HTS {line.hts}")
             continue
         record = by_hts[digits].popleft()
+        if not getattr(line, "gross_unit", None):
+            line.gross_unit = gross_unit_by_hts.get(digits) or default_gross_unit
+        if not getattr(line, "net_unit", None):
+            line.net_unit = net_unit_by_hts.get(digits) or default_net_unit
         net_value = reporting_quantity(record, line.net_unit)
         updates = {
             "gross_weight": record.gross_weight,

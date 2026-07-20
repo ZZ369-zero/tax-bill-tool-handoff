@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from pypdf import PdfReader, PdfWriter
+from pypdf.generic import DecodedStreamObject, NameObject
 from reportlab.pdfgen import canvas
 
 from web_app.app import (
@@ -42,6 +43,22 @@ class PdfTextReplacementTests(unittest.TestCase):
         pdf.drawString(184.98, 398, "2,048 KG")
         pdf.save()
         path.write_bytes(buffer.getvalue())
+
+    def make_tj_pdf(self, path: Path) -> None:
+        buffer = BytesIO()
+        pdf = canvas.Canvas(buffer, pagesize=(612, 792))
+        pdf.setFont("Helvetica", 9)
+        pdf.drawString(72, 480, "ANCHOR")
+        pdf.save()
+        source = path.parent / "base.pdf"
+        source.write_bytes(buffer.getvalue())
+
+        writer = PdfWriter(clone_from=str(source))
+        stream = DecodedStreamObject()
+        stream.set_data(b"BT /F1 9 Tf 1 0 0 1 272.98 398 Tm [(15.45 KG)] TJ ET\n")
+        writer.pages[0][NameObject("/Contents")] = writer._add_object(stream)
+        with path.open("wb") as output:
+            writer.write(output)
 
     def test_replaces_only_targeted_text_object(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -150,6 +167,32 @@ class PdfTextReplacementTests(unittest.TestCase):
             self.assertEqual(applied, [replacement])
             self.assertIn("2,087 KG", text)
             self.assertNotIn("2,048 KG", text)
+
+    def test_replaces_tj_text_array_without_overlay(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.pdf"
+            output = Path(temp_dir) / "output.pdf"
+            self.make_tj_pdf(source)
+
+            writer = PdfWriter(clone_from=str(source))
+            replacement = PdfTextReplacement(
+                page=1,
+                field="line 001 net quantity",
+                old_text="15.45 KG",
+                new_text="1.44 KG",
+                x_min=235,
+                x_max=335,
+                y=398,
+            )
+
+            applied = apply_page_replacements(writer.pages[0], writer, [replacement])
+            with output.open("wb") as stream:
+                writer.write(stream)
+
+            text = PdfReader(str(output)).pages[0].extract_text()
+            self.assertEqual(applied, [replacement])
+            self.assertIn("1.44 KG", text)
+            self.assertNotIn("15.45 KG", text)
 
 
 if __name__ == "__main__":
