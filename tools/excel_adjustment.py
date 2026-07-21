@@ -37,6 +37,7 @@ class ExcelAdjustmentResult:
     matched_lines: int
     modified_fields: tuple[str, ...]
     changes: tuple[str, ...]
+    matching_strategy: str = "hts"
 
 
 @dataclass(frozen=True)
@@ -270,6 +271,23 @@ def line_field_key(line: Any, field_name: str) -> str:
     return f"line:{line.page}:{line.line_no}:{field_name}"
 
 
+def format_line_hts(digits: str, original_value: Any) -> str:
+    original = str(original_value or "")
+    groups = [part for part in re.split(r"\D+", original) if part]
+    if groups and sum(len(part) for part in groups) == len(digits):
+        parts: list[str] = []
+        offset = 0
+        for group in groups:
+            parts.append(digits[offset : offset + len(group)])
+            offset += len(group)
+        return ".".join(parts)
+    if len(digits) == 10:
+        return f"{digits[:4]}.{digits[4:6]}.{digits[6:]}"
+    if len(digits) == 8:
+        return f"{digits[:4]}.{digits[4:6]}.{digits[6:]}"
+    return digits
+
+
 def most_common_unit(units: list[str]) -> str | None:
     normalized = [unit.strip().upper() for unit in units if unit and unit.strip()]
     if not normalized:
@@ -291,11 +309,35 @@ def inferred_units_by_hts(lines: list[Any], field_name: str) -> dict[str, str]:
     }
 
 
-def apply_second_sheet(source: str | Path | BinaryIO, lines: list[Any]) -> ExcelAdjustmentResult:
-    sheet_name, records = read_best_matching_sheet(source, lines)
+def match_records_to_lines(
+    records: list[ExcelLineValues],
+    lines: list[Any],
+) -> tuple[list[tuple[Any, ExcelLineValues]], str, list[str]]:
     by_hts: dict[str, deque[ExcelLineValues]] = defaultdict(deque)
     for record in records:
         by_hts[record.hts].append(record)
+
+    matched_by_hts: list[tuple[Any, ExcelLineValues]] = []
+    unmatched: list[str] = []
+    for line in lines:
+        digits = hts_digits(line.hts)
+        if not digits or not by_hts[digits]:
+            unmatched.append(f"line {line.line_no} HTS {line.hts}")
+            continue
+        matched_by_hts.append((line, by_hts[digits].popleft()))
+
+    if not unmatched:
+        return matched_by_hts, "hts", []
+    if len(records) == len(lines):
+        return list(zip(lines, records)), "row-order", []
+    return matched_by_hts, "hts", unmatched
+
+
+def apply_second_sheet(source: str | Path | BinaryIO, lines: list[Any]) -> ExcelAdjustmentResult:
+    sheet_name, records = read_best_matching_sheet(source, lines)
+    line_records, matching_strategy, unmatched = match_records_to_lines(records, lines)
+    if unmatched:
+        raise ValueError("Unable to match Excel rows for " + "; ".join(unmatched))
     gross_unit_by_hts = inferred_units_by_hts(lines, "gross_unit")
     net_unit_by_hts = inferred_units_by_hts(lines, "net_unit")
     default_gross_unit = most_common_unit([str(getattr(line, "gross_unit", "") or "") for line in lines])
@@ -303,17 +345,18 @@ def apply_second_sheet(source: str | Path | BinaryIO, lines: list[Any]) -> Excel
 
     modified_fields: list[str] = []
     changes: list[str] = []
-    unmatched: list[str] = []
-    for line in lines:
+    for line, record in line_records:
         digits = hts_digits(line.hts)
-        if not digits or not by_hts[digits]:
-            unmatched.append(f"line {line.line_no} HTS {line.hts}")
-            continue
-        record = by_hts[digits].popleft()
         if not getattr(line, "gross_unit", None):
             line.gross_unit = gross_unit_by_hts.get(digits) or default_gross_unit
         if not getattr(line, "net_unit", None):
             line.net_unit = net_unit_by_hts.get(digits) or default_net_unit
+        if record.hts and digits != record.hts:
+            old_value = getattr(line, "hts")
+            new_value = format_line_hts(record.hts, old_value)
+            setattr(line, "hts", new_value)
+            modified_fields.append(line_field_key(line, "hts"))
+            changes.append(f"line {line.line_no} hts: {old_value} -> {new_value}")
         net_value = reporting_quantity(record, line.net_unit)
         updates = {
             "gross_weight": record.gross_weight,
@@ -334,8 +377,6 @@ def apply_second_sheet(source: str | Path | BinaryIO, lines: list[Any]) -> Excel
             modified_fields.append(line_field_key(line, field_name))
             changes.append(f"line {line.line_no} {field_name}: {old_value} -> {value}")
 
-    if unmatched:
-        raise ValueError("Unable to match Excel rows for " + "; ".join(unmatched))
     if not modified_fields:
         raise ValueError("The second Excel worksheet does not contain any changes from the original PDF.")
     return ExcelAdjustmentResult(
@@ -343,4 +384,5 @@ def apply_second_sheet(source: str | Path | BinaryIO, lines: list[Any]) -> Excel
         matched_lines=len(lines),
         modified_fields=tuple(modified_fields),
         changes=tuple(changes),
+        matching_strategy=matching_strategy,
     )

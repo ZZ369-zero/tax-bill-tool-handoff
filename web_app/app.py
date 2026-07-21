@@ -39,7 +39,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.4"
+APP_VERSION = "0.1.5"
 
 
 def load_parser_module():
@@ -1102,6 +1102,7 @@ def health() -> dict[str, str]:
         "mpf_rounding": "line-sum",
         "worksheet_matching": "best-hts-match",
         "kg_quantity": "item-size-aware",
+        "hts_mismatch_strategy": "row-order-when-counts-match",
     }
 
 
@@ -1282,6 +1283,7 @@ async def generate_from_excel(
                 "Content-Disposition": f'attachment; filename="{filename}"',
                 "X-Excel-Sheet": adjustment.sheet_name.encode("ascii", errors="replace").decode("ascii"),
                 "X-Matched-Lines": str(adjustment.matched_lines),
+                "X-Matching-Strategy": adjustment.matching_strategy,
                 "X-Modified-Fields": str(len(modified_fields)),
                 "X-Transport-Mode": normalized_transport_mode,
                 "X-Include-HMF": str(include_hmf).lower(),

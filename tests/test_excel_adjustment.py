@@ -246,6 +246,70 @@ class ExcelAdjustmentTests(unittest.TestCase):
         self.assertEqual(lines[0].net_quantity, "35")
         self.assertEqual(lines[1].net_quantity, "158")
 
+    def test_falls_back_to_row_order_when_line_counts_match_but_hts_differ(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "invoice.xlsx"
+            rows = [
+                {
+                    "sequence": 1,
+                    "description": "LIP COLOR 4ml",
+                    "hts": "3304100000",
+                    "quantity": 288,
+                    "entered_value": 550,
+                    "gross_weight": 17,
+                    "net_weight": 1.15,
+                },
+                {
+                    "sequence": 2,
+                    "description": "FACE CONTOUR 7g",
+                    "hts": "3304995000",
+                    "quantity": 288,
+                    "entered_value": 827,
+                    "gross_weight": 16,
+                    "net_weight": 2.02,
+                },
+            ]
+            self.make_workbook_from_rows(path, rows)
+            lines = [
+                parser.TaxLine(
+                    file_role="test",
+                    source_file="source.pdf",
+                    pair_key="test",
+                    page=1,
+                    line_no="001",
+                    hts="3304.10.0000",
+                    gross_weight="14",
+                    gross_unit="KG",
+                    net_quantity="1.44",
+                    net_unit="KG",
+                    entered_value="688",
+                ),
+                parser.TaxLine(
+                    file_role="test",
+                    source_file="source.pdf",
+                    pair_key="test",
+                    page=1,
+                    line_no="002",
+                    hts="3304.10.0000",
+                    gross_weight="21",
+                    gross_unit="KG",
+                    net_quantity="19.04",
+                    net_unit="KG",
+                    entered_value="827",
+                ),
+            ]
+
+            result = apply_second_sheet(path, lines)
+
+        self.assertEqual(result.matching_strategy, "row-order")
+        self.assertEqual(lines[0].hts, "3304.10.0000")
+        self.assertEqual(lines[1].hts, "3304.99.5000")
+        self.assertEqual(lines[0].gross_weight, "17")
+        self.assertEqual(lines[0].net_quantity, "1.15")
+        self.assertEqual(lines[1].gross_weight, "16")
+        self.assertEqual(lines[1].net_quantity, "2.02")
+        self.assertIn("line:1:002:hts", result.modified_fields)
+
     def test_uses_excel_quantity_divided_by_144_for_gr_lines(self) -> None:
         with TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "invoice.xlsx"
