@@ -74,6 +74,71 @@ class CbpCalculationTests(unittest.TestCase):
         self.assertEqual(parsed["rate"], "5%")
         self.assertEqual(parsed["duty_amount"], "160.00")
 
+    def test_parses_entered_value_separately_from_adjacent_percent_rate(self) -> None:
+        row = [
+            parser.TextFragment(
+                page=1,
+                x=67.0,
+                y=398.0,
+                size=9.0,
+                font="/Helvetica",
+                text="3921.90.5050",
+            ),
+            parser.TextFragment(
+                page=1,
+                x=179.97,
+                y=398.0,
+                size=9.0,
+                font="/Helvetica",
+                text="35,573 KG",
+            ),
+            parser.TextFragment(
+                page=1,
+                x=260.97,
+                y=398.0,
+                size=9.0,
+                font="/Helvetica",
+                text="2,787.00 M2",
+            ),
+            parser.TextFragment(
+                page=1,
+                x=363.48,
+                y=398.0,
+                size=9.0,
+                font="/Helvetica",
+                text="$8,400",
+            ),
+            parser.TextFragment(
+                page=1,
+                x=399.0,
+                y=398.0,
+                size=9.0,
+                font="/Helvetica",
+                text="4.8%",
+            ),
+            parser.TextFragment(
+                page=1,
+                x=548.47,
+                y=398.0,
+                size=9.0,
+                font="/Helvetica",
+                text="$403.20",
+            ),
+        ]
+        text = "3921.90.5050 35,573 KG 2,787.00 M2 $8,400 4.8% $403.20"
+
+        parsed = parser.parse_main_hts_row(row, text, "3921.90.5050")
+
+        self.assertEqual(parsed["entered_value"], "8,400")
+        self.assertEqual(parsed["rate"], "4.8%")
+        self.assertEqual(parsed["duty_amount"], "403.20")
+
+    def test_normalizes_bl_or_awb_carrier_prefix_spacing(self) -> None:
+        self.assertEqual(
+            parser.normalize_bl_or_awb_number("COSU 6504318320, YSSZ26060511"),
+            "COSU6504318320, YSSZ26060511",
+        )
+
     def test_131_80755312_uses_whole_dollar_line_values(self) -> None:
         lines = [
             tax_line("001", "1992", "4.7%", "10%", net_quantity="400", net_unit="NO"),

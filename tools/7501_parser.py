@@ -347,6 +347,17 @@ def parse_money(value: str | None) -> str | None:
     return match.group(1) if match else None
 
 
+def parse_entered_value_text(value: str | None) -> str | None:
+    if not value:
+        return None
+    dollar_value = money_after_dollar(value)
+    if dollar_value:
+        return dollar_value
+    if "%" in value:
+        return None
+    return parse_money(value)
+
+
 def money_after_dollar(value: str | None, *, last: bool = False) -> str | None:
     if not value:
         return None
@@ -354,6 +365,15 @@ def money_after_dollar(value: str | None, *, last: bool = False) -> str | None:
     if not matches:
         return None
     return parse_money(matches[-1] if last else matches[0])
+
+
+def normalize_bl_or_awb_number(value: str | None) -> str | None:
+    if not value:
+        return None
+    cleaned = normalize_spaces(value)
+    cleaned = re.sub(r"\b([A-Z]{4})\s+([A-Z0-9]{6,})\b", r"\1\2", cleaned, flags=re.I)
+    cleaned = re.sub(r"\s*,\s*", ", ", cleaned)
+    return cleaned or None
 
 
 def parse_decimal(value: str | None) -> Decimal | None:
@@ -615,7 +635,9 @@ def parse_header_document(
         mode_of_transport=field_below(fragments, "9. Mode of Transport", 185, 260),
         country_of_origin=field_below(fragments, "10. Country of Origin", 310, 370),
         import_date=field_below(fragments, "11. Import Date", 490, 570),
-        bl_or_awb_number=field_below(fragments, "12. B/L or AWB Number", 20, 150),
+        bl_or_awb_number=normalize_bl_or_awb_number(
+            field_below(fragments, "12. B/L or AWB Number", 20, 150)
+        ),
         manufacturer_id=field_below(fragments, "13. Manufacturer ID", 190, 315),
         exporting_country=field_below(fragments, "14. Exporting Country", 310, 370),
         export_date=field_below(fragments, "15. Export Date", 490, 570),
@@ -881,7 +903,8 @@ def parse_main_hts_row(
 
     gross_zone = zone_text(150, 235)
     net_zone = zone_text(235, 335)
-    entered_rate_zone = zone_text(330, 500)
+    entered_zone = zone_text(330, 398)
+    rate_zone = zone_text(395, 500)
     duty_zone = zone_text(500, 590)
     if gross_zone:
         match = re.search(
@@ -899,11 +922,12 @@ def parse_main_hts_row(
         if match:
             result["net_quantity"] = match.group(1)
             result["net_unit"] = match.group(2)
-    if entered_rate_zone:
-        money = parse_money(entered_rate_zone)
+    if entered_zone:
+        money = parse_entered_value_text(entered_zone)
         if money:
             result["entered_value"] = money
-        rate = re.search(r"(FREE|[0-9.]+%)", entered_rate_zone)
+    if rate_zone:
+        rate = re.search(r"(FREE|[0-9.]+%)", rate_zone)
         if rate:
             result["rate"] = rate.group(1)
     if duty_zone:
@@ -937,8 +961,8 @@ def parse_main_hts_row(
             if match:
                 result["net_quantity"] = match.group(1)
                 result["net_unit"] = match.group(2)
-        if 330 <= fragment.x <= 430:
-            money = parse_money(text)
+        if 330 <= fragment.x < 398:
+            money = parse_entered_value_text(text)
             if money:
                 result["entered_value"] = money
         if 380 <= fragment.x <= 500:

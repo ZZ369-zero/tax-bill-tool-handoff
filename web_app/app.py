@@ -39,7 +39,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.5"
+APP_VERSION = "0.1.6"
 
 
 def load_parser_module():
@@ -1103,6 +1103,8 @@ def health() -> dict[str, str]:
         "worksheet_matching": "best-hts-match",
         "kg_quantity": "item-size-aware",
         "hts_mismatch_strategy": "row-order-when-counts-match",
+        "entered_value_parsing": "split-entered-value-and-rate-columns",
+        "bl_awb_normalization": "carrier-prefix-space-removed",
     }
 
 
