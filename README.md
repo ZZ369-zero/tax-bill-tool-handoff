@@ -114,7 +114,8 @@ Use the original 7501 PDF plus a two-sheet commercial invoice workbook to genera
 
 - Gross weight from the populated item-level gross-weight column.
 - Net quantity from item quantity, net weight when the tax-form reporting unit is `KG`,
-  quantity ÷ 144 for `GR`, and quantity ÷ 1,000 for `K`.
+  quantity ÷ 144 for `GR`, quantity ÷ 1,000 for `K`, and quantity ÷ 12
+  rounded to whole dozens for `DPR`.
 - Entered value from the FOB total-value column.
 - 501-HMF is controlled by transport mode: `auto` keeps the original PDF's HMF
   state, `ocean` recalculates HMF at 0.125%, and `air` excludes HMF.

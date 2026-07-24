@@ -386,6 +386,45 @@ class ExcelAdjustmentTests(unittest.TestCase):
         )
         self.assertNotIn("net_quantity", "; ".join(result.changes))
 
+    def test_uses_excel_quantity_divided_by_12_for_dpr_lines(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "invoice.xlsx"
+            rows = [
+                {
+                    "sequence": 1,
+                    "hts": "6115969020",
+                    "quantity": 309920,
+                    "entered_value": 9297.6,
+                    "gross_weight": 8215.2,
+                    "net_weight": 7155.4,
+                }
+            ]
+            self.make_workbook_from_rows(path, rows)
+            line = parser.TaxLine(
+                file_role="test",
+                source_file="source.pdf",
+                pair_key="test",
+                page=1,
+                line_no="001",
+                hts="6115.96.9020",
+                gross_weight="8,215",
+                gross_unit="KG",
+                net_quantity="25,827.00",
+                net_unit="DPR",
+                entered_value="9298",
+            )
+
+            result = apply_second_sheet(path, [line])
+
+        self.assertEqual(line.gross_weight, "8215.2")
+        self.assertEqual(line.net_quantity, "25,827.00")
+        self.assertEqual(line.entered_value, "9297.6")
+        self.assertEqual(
+            result.modified_fields,
+            ("line:1:001:gross_weight", "line:1:001:entered_value"),
+        )
+        self.assertNotIn("net_quantity", "; ".join(result.changes))
+
     def test_uses_item_size_from_description_for_kg_lines(self) -> None:
         with TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "invoice.xlsx"

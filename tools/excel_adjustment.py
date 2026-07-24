@@ -13,6 +13,10 @@ from openpyxl import load_workbook
 REPORTING_QUANTITY_DIVISORS = {
     "GR": Decimal("144"),
     "K": Decimal("1000"),
+    "DPR": Decimal("12"),
+}
+REPORTING_QUANTITY_PLACES = {
+    "DPR": 0,
 }
 UNIT_CONTENT_PATTERN = re.compile(
     r"(?<![A-Z0-9])([0-9]+(?:\.[0-9]+)?)\s*(G|GR|GRAM|GRAMS|ML|毫升|克)\b",
@@ -110,7 +114,8 @@ def reporting_quantity(record: ExcelLineValues, net_unit: Any) -> str | None:
         quantity = decimal_text(record.quantity)
         if quantity is None:
             return None
-        return format_decimal(Decimal(quantity) / REPORTING_QUANTITY_DIVISORS[unit], places=2)
+        places = REPORTING_QUANTITY_PLACES.get(unit, 2)
+        return format_decimal(Decimal(quantity) / REPORTING_QUANTITY_DIVISORS[unit], places=places)
     return record.quantity
 
 
