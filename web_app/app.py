@@ -39,7 +39,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.7"
+APP_VERSION = "0.1.8"
 
 
 def load_parser_module():
@@ -890,7 +890,6 @@ def build_pdf_text_replacements(
             x_min=200,
             x_max=390,
             y=None,
-            alignment="left",
         )
         add_replacement(
             replacements,
@@ -903,7 +902,6 @@ def build_pdf_text_replacements(
             x_min=480,
             x_max=590,
             y=None,
-            alignment="left",
         )
     return replacements
 
@@ -1103,6 +1101,7 @@ def health() -> dict[str, str]:
         "worksheet_matching": "best-hts-match",
         "kg_quantity": "item-size-aware",
         "dpr_quantity": "pairs-divided-by-12",
+        "invoice_footer_alignment": "right-edge",
         "hts_mismatch_strategy": "row-order-when-counts-match",
         "entered_value_parsing": "split-entered-value-and-rate-columns",
         "bl_awb_normalization": "carrier-prefix-space-removed",
