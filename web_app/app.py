@@ -9,7 +9,7 @@ import shutil
 import sys
 import time
 from dataclasses import asdict, dataclass, fields, is_dataclass
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -39,7 +39,8 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.9"
+APP_VERSION = "0.1.10"
+WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 
 
 def load_parser_module():
@@ -390,17 +391,30 @@ def decimal_places(value: Any, *, trim_trailing_zeros: bool = False) -> int:
     return len(fraction)
 
 
+def quantity_decimal_limit(unit: Any) -> int | None:
+    normalized = parser.re.sub(r"[^A-Z]", "", display(unit).upper())
+    if normalized in WEIGHT_UNITS:
+        return 2
+    return None
+
+
 def quantity_text(value: Any, unit: Any, original_value: Any) -> str:
     decimal_value = parser.parse_decimal(value)
     original_decimals = decimal_places(original_value)
     value_decimals = decimal_places(value, trim_trailing_zeros=True)
     decimals = max(original_decimals, value_decimals)
+    decimal_limit = quantity_decimal_limit(unit)
+    if decimal_limit is not None:
+        decimals = min(decimals, decimal_limit)
     if decimal_value is None:
         number = display(value)
     elif decimals:
-        number = f"{decimal_value:,.{decimals}f}"
+        quantum = Decimal("1").scaleb(-decimals)
+        rounded = decimal_value.quantize(quantum, rounding=ROUND_HALF_UP)
+        number = f"{rounded:,.{decimals}f}"
     else:
-        number = f"{decimal_value:,.0f}"
+        rounded = decimal_value.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        number = f"{rounded:,.0f}"
     return parser.normalize_spaces(f"{number} {display(unit)}")
 
 
@@ -1110,7 +1124,7 @@ def health() -> dict[str, str]:
         "kg_quantity": "item-size-aware",
         "dpr_quantity": "pairs-divided-by-12",
         "invoice_footer_alignment": "right-edge",
-        "quantity_decimal_format": "trim-input-trailing-zeros",
+        "quantity_decimal_format": "trim-input-trailing-zeros-weight-max-2",
         "hts_mismatch_strategy": "row-order-when-counts-match",
         "entered_value_parsing": "split-entered-value-and-rate-columns",
         "bl_awb_normalization": "carrier-prefix-space-removed",
