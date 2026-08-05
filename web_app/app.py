@@ -39,7 +39,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.8"
+APP_VERSION = "0.1.9"
 
 
 def load_parser_module():
@@ -380,12 +380,20 @@ def values_equal(left: Any, right: Any) -> bool:
     return parser.normalize_spaces(display(left)) == parser.normalize_spaces(display(right))
 
 
+def decimal_places(value: Any, *, trim_trailing_zeros: bool = False) -> int:
+    text = display(value).replace(",", "").strip()
+    if "." not in text:
+        return 0
+    fraction = text.rsplit(".", 1)[1]
+    if trim_trailing_zeros:
+        fraction = fraction.rstrip("0")
+    return len(fraction)
+
+
 def quantity_text(value: Any, unit: Any, original_value: Any) -> str:
     decimal_value = parser.parse_decimal(value)
-    original = display(original_value).replace(",", "")
-    value_text = display(value).replace(",", "")
-    original_decimals = len(original.rsplit(".", 1)[1]) if "." in original else 0
-    value_decimals = len(value_text.rsplit(".", 1)[1]) if "." in value_text else 0
+    original_decimals = decimal_places(original_value)
+    value_decimals = decimal_places(value, trim_trailing_zeros=True)
     decimals = max(original_decimals, value_decimals)
     if decimal_value is None:
         number = display(value)
@@ -1102,6 +1110,7 @@ def health() -> dict[str, str]:
         "kg_quantity": "item-size-aware",
         "dpr_quantity": "pairs-divided-by-12",
         "invoice_footer_alignment": "right-edge",
+        "quantity_decimal_format": "trim-input-trailing-zeros",
         "hts_mismatch_strategy": "row-order-when-counts-match",
         "entered_value_parsing": "split-entered-value-and-rate-columns",
         "bl_awb_normalization": "carrier-prefix-space-removed",

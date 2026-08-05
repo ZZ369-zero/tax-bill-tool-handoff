@@ -119,6 +119,8 @@ class PdfTextReplacementTests(unittest.TestCase):
     def test_quantity_keeps_original_precision_and_unit(self) -> None:
         self.assertEqual(quantity_text("840", "NO", "588.00"), "840.00 NO")
         self.assertEqual(quantity_text("1200.5", "KG", "500.00"), "1,200.50 KG")
+        self.assertEqual(quantity_text("840.000", "KG", "840.00"), "840.00 KG")
+        self.assertEqual(quantity_text("840.125", "KG", "840.00"), "840.125 KG")
 
     def test_numeric_comparison_ignores_money_formatting(self) -> None:
         self.assertTrue(values_equal("2,533", "2533.00"))
