@@ -232,7 +232,14 @@ async function lookupHts(index) {
   }
   setStatus(`正在查询 HTS ${code}`, collectWarnings());
   try {
-    const origin = state.document?.country_of_origin || state.document?.exporting_country || "";
+    let origin = state.document?.country_of_origin || state.document?.exporting_country || "";
+    const existingChapter99Digits = String(line.chapter_99_codes || "")
+      .split(";")
+      .map((item) => item.replace(/\D/g, ""))
+      .filter(Boolean);
+    if (!origin && existingChapter99Digits.includes("99030531")) {
+      origin = "CN";
+    }
     const params = new URLSearchParams({ code });
     if (origin && origin !== "-") {
       params.set("origin", origin);

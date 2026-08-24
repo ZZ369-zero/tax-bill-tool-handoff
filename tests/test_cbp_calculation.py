@@ -239,11 +239,11 @@ class CbpCalculationTests(unittest.TestCase):
 
         modified_fields = recalculate(document, [line], include_hmf=False)
 
-        self.assertEqual(line.chapter_99_codes, "9903.05.31; 9903.76.02")
-        self.assertEqual(line.chapter_99_rates, "12.5%; 25%")
-        self.assertEqual(line.hts_additional_codes, "9903.76.02")
-        self.assertEqual(line.calculated_chapter_99_duty, "375.00")
-        self.assertEqual(document.calculated_duty_total, "375.00")
+        self.assertEqual(line.chapter_99_codes, "9903.05.31; 9903.88.04; 9903.76.02")
+        self.assertEqual(line.chapter_99_rates, "12.5%; 25%; 25%")
+        self.assertEqual(line.hts_additional_codes, "9903.88.04; 9903.76.02; 9903.05.31")
+        self.assertEqual(line.calculated_chapter_99_duty, "625.00")
+        self.assertEqual(document.calculated_duty_total, "625.00")
         self.assertIn(line_field_key(line, "chapter_99_rates"), modified_fields)
 
     def test_static_section_232_wood_rule_does_not_duplicate_undotted_codes(self) -> None:
@@ -254,9 +254,9 @@ class CbpCalculationTests(unittest.TestCase):
 
         modified_fields = recalculate(document, [line], include_hmf=False)
 
-        self.assertEqual(line.chapter_99_codes, "99030531; 99037602")
-        self.assertEqual(line.chapter_99_rates, "12.5%; 25%")
-        self.assertEqual(modified_fields, ())
+        self.assertEqual(line.chapter_99_codes, "99030531; 99037602; 9903.88.04")
+        self.assertEqual(line.chapter_99_rates, "12.5%; 25%; 25%")
+        self.assertIn(line_field_key(line, "chapter_99_codes"), modified_fields)
 
     def test_static_section_232_wood_rule_uses_origin_specific_heading(self) -> None:
         line = tax_line("001", "1000", "FREE", "", net_quantity="1", net_unit="NO")
@@ -282,6 +282,19 @@ class CbpCalculationTests(unittest.TestCase):
         self.assertEqual(line.chapter_99_rates, "25%; 12.5%")
         self.assertEqual(line.calculated_chapter_99_duty, "375.00")
         self.assertEqual(document.calculated_duty_total, "375.00")
+        self.assertIn(line_field_key(line, "chapter_99_codes"), modified_fields)
+
+    def test_existing_99030531_implies_china_origin_for_section_301_recalculation(self) -> None:
+        line = tax_line("001", "1000", "FREE", "12.5%", net_quantity="1", net_unit="NO")
+        line.hts = "9401.69.6011"
+        line.chapter_99_codes = "9903.05.31"
+        document = tax_document()
+
+        modified_fields = recalculate(document, [line], include_hmf=False)
+
+        self.assertEqual(line.chapter_99_codes, "9903.05.31; 9903.88.04")
+        self.assertEqual(line.chapter_99_rates, "12.5%; 25%")
+        self.assertEqual(line.calculated_chapter_99_duty, "375.00")
         self.assertIn(line_field_key(line, "chapter_99_codes"), modified_fields)
 
 

@@ -40,7 +40,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.15"
+APP_VERSION = "0.1.16"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 
 
@@ -163,6 +163,13 @@ def document_origin(document: Any) -> str | None:
     return display(getattr(document, "country_of_origin", None)) or display(getattr(document, "exporting_country", None)) or None
 
 
+def line_implies_china_origin(line: Any) -> bool:
+    return any(
+        chapter_99_digits(code) == "99030531"
+        for code in semicolon_values(getattr(line, "chapter_99_codes", None))
+    )
+
+
 def sync_static_chapter_99(lines: list[Any], *, document: Any = None) -> tuple[str, ...]:
     """Apply locally maintained Chapter 99 mappings that USITC footnotes miss."""
     modified_fields: list[str] = []
@@ -173,7 +180,8 @@ def sync_static_chapter_99(lines: list[Any], *, document: Any = None) -> tuple[s
         except ValueError:
             continue
 
-        details = static_additional_hts_details(digits, origin)
+        line_origin = origin or ("CN" if line_implies_china_origin(line) else None)
+        details = static_additional_hts_details(digits, line_origin)
         if not details:
             continue
 
@@ -184,7 +192,13 @@ def sync_static_chapter_99(lines: list[Any], *, document: Any = None) -> tuple[s
             for detail in details
             if chapter_99_digits(detail.get("code")) not in existing_digits
         ]
-        line.hts_additional_codes = "; ".join(detail["code"] for detail in details)
+        existing_suggestions = semicolon_values(getattr(line, "hts_additional_codes", None))
+        suggestion_digits = {chapter_99_digits(code) for code in existing_suggestions}
+        for detail in details:
+            if chapter_99_digits(detail["code"]) not in suggestion_digits:
+                existing_suggestions.append(detail["code"])
+                suggestion_digits.add(chapter_99_digits(detail["code"]))
+        line.hts_additional_codes = "; ".join(existing_suggestions) or None
         if not missing_details:
             continue
 
@@ -1253,6 +1267,7 @@ def health() -> dict[str, str]:
         "section_232_wood_notes": "non-upholstered-wooden-seats-9401.69.6011-6031-not-note37-covered",
         "section_232_wood_origin_routing": "9903.76.20-9903.76.24-for-UK-JP-EU-KR-TW",
         "china_section_301_static_rules": "9401-seating-9903.88.03-04-15-plus-9903.05.31",
+        "china_origin_inference": "existing-9903.05.31-implies-CN-for-section-301-recalculation",
     }
 
 
