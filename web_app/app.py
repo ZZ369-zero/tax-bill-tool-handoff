@@ -39,7 +39,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.10"
+APP_VERSION = "0.1.11"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 
 
@@ -1128,6 +1128,7 @@ def health() -> dict[str, str]:
         "hts_mismatch_strategy": "row-order-when-counts-match",
         "entered_value_parsing": "split-entered-value-and-rate-columns",
         "bl_awb_normalization": "carrier-prefix-space-removed",
+        "chapter_99_static_rules": "section-232-wood-products-9903.76.01-9903.76.03",
     }
 
 

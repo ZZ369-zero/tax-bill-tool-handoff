@@ -11,6 +11,51 @@ from urllib.request import Request, urlopen
 HTS_SEARCH_URL = "https://hts.usitc.gov/reststop/search"
 ADDITIONAL_HTS_PATTERN = re.compile(r"\b(99\d{2}\.\d{2}\.\d{2})\b")
 
+# Some Chapter 99 provisions are not exposed as footnotes on every ordinary HTS
+# line in the USITC search result. CBP guidance for the Section 232 wood
+# products action lists affected ordinary HTS subheadings and the matching
+# Chapter 99 reporting number. Keep these explicit reverse mappings here so the
+# UI/batch workflow does not depend solely on ordinary-line footnotes.
+STATIC_ADDITIONAL_HTS_RULES: tuple[dict[str, Any], ...] = (
+    {
+        "code": "9903.76.01",
+        "rate": "10%",
+        "description": "Section 232 wood products - softwood timber and lumber products",
+        "applies_to": (
+            "44031100",
+            "44032101",
+            "44032201",
+            "44032301",
+            "44032401",
+            "44032501",
+            "44032601",
+            "44039901",
+            "44061100",
+            "44069100",
+            "44071100",
+            "44071200",
+            "44071300",
+            "44071400",
+            "44071900",
+        ),
+        "source": "CBP CSMS 3f69699; USITC HTS 9903.76.01",
+    },
+    {
+        "code": "9903.76.02",
+        "rate": "25%",
+        "description": "Section 232 wood products - upholstered wooden furniture products",
+        "applies_to": ("9401614011", "9401614031", "9401616011", "9401616031"),
+        "source": "CBP CSMS 3f69699; USITC HTS 9903.76.02",
+    },
+    {
+        "code": "9903.76.03",
+        "rate": "25%",
+        "description": "Section 232 wood products - kitchen cabinets, vanities, and parts",
+        "applies_to": ("9403409060", "9403608093", "9403910080"),
+        "source": "CBP CSMS 3f69699; USITC HTS 9903.76.03",
+    },
+)
+
 
 def hts_digits(value: str) -> str:
     digits = re.sub(r"\D", "", value or "")
@@ -79,6 +124,21 @@ def normalized_units(raw_units: Any) -> list[str]:
     return units
 
 
+def static_additional_hts_details(digits: str) -> list[dict[str, str]]:
+    details: list[dict[str, str]] = []
+    for rule in STATIC_ADDITIONAL_HTS_RULES:
+        if any(digits == target or (len(target) == 8 and digits.startswith(target)) for target in rule["applies_to"]):
+            details.append(
+                {
+                    "code": str(rule["code"]),
+                    "rate": str(rule["rate"]),
+                    "description": str(rule["description"]),
+                    "source": str(rule["source"]),
+                },
+            )
+    return details
+
+
 def build_lookup_result(code: str, records: list[dict[str, Any]]) -> dict[str, Any]:
     digits = hts_digits(code)
     relevant = {
@@ -111,12 +171,23 @@ def build_lookup_result(code: str, records: list[dict[str, Any]]) -> dict[str, A
     rate_record = max(rate_candidates, key=lambda record: len(record_digits(record)), default=exact)
     units = normalized_units(exact.get("units"))
 
-    additional_codes: list[str] = []
+    additional_details: list[dict[str, str | None]] = []
     for record in path:
         for footnote in record.get("footnotes") or []:
             for match in ADDITIONAL_HTS_PATTERN.findall(str(footnote.get("value") or "")):
-                if match not in additional_codes:
-                    additional_codes.append(match)
+                if not any(item["code"] == match for item in additional_details):
+                    additional_details.append(
+                        {
+                            "code": match,
+                            "rate": None,
+                            "description": "USITC footnote",
+                            "source": "USITC HTS footnote",
+                        },
+                    )
+
+    for detail in static_additional_hts_details(digits):
+        if not any(item["code"] == detail["code"] for item in additional_details):
+            additional_details.append(detail)
 
     return {
         "code": format_hts(digits),
@@ -127,7 +198,8 @@ def build_lookup_result(code: str, records: list[dict[str, Any]]) -> dict[str, A
         "general_rate": str(rate_record.get("general") or "").strip() or None,
         "special_rate": str(rate_record.get("special") or "").strip() or None,
         "column_2_rate": str(rate_record.get("other") or "").strip() or None,
-        "additional_hts_codes": additional_codes,
+        "additional_hts_codes": [str(item["code"]) for item in additional_details],
+        "additional_hts_details": additional_details,
         "source": "USITC HTS REST API",
     }
 

@@ -38,6 +38,90 @@ class HtsLookupTests(unittest.TestCase):
         self.assertEqual(format_hts("8414519090"), "8414.51.90.90")
         self.assertEqual(normalized_units(["No. and kg"]), ["NO", "KG"])
 
+    def test_adds_section_232_wood_furniture_rule_without_footnote(self) -> None:
+        records = [
+            {
+                "htsno": "9401.61.40",
+                "description": "Upholstered",
+                "general": "Free",
+            },
+            {
+                "htsno": "9401.61.40.11",
+                "description": "Household",
+                "general": "",
+                "units": ["No."],
+                "footnotes": [],
+            },
+        ]
+
+        result = build_lookup_result("9401614011", records)
+
+        self.assertIn("9903.76.02", result["additional_hts_codes"])
+        self.assertIn(
+            {
+                "code": "9903.76.02",
+                "rate": "25%",
+                "description": "Section 232 wood products - upholstered wooden furniture products",
+                "source": "CBP CSMS 3f69699; USITC HTS 9903.76.02",
+            },
+            result["additional_hts_details"],
+        )
+
+    def test_adds_section_232_kitchen_cabinet_rule_without_dropping_footnotes(self) -> None:
+        records = [
+            {
+                "htsno": "9403.91",
+                "description": "Parts",
+                "general": "Free",
+                "footnotes": [{"value": "See 9903.90.08."}],
+            },
+            {
+                "htsno": "9403.91.00.80",
+                "description": "Other",
+                "general": "",
+                "units": ["kg"],
+            },
+        ]
+
+        result = build_lookup_result("9403910080", records)
+
+        self.assertEqual(result["additional_hts_codes"], ["9903.90.08", "9903.76.03"])
+
+    def test_adds_section_232_softwood_rule_for_eight_digit_provisions(self) -> None:
+        records = [
+            {
+                "htsno": "4407.19.00",
+                "description": "Other",
+                "general": "Free",
+                "units": ["m3"],
+                "footnotes": [],
+            },
+        ]
+
+        result = build_lookup_result("44071900", records)
+
+        self.assertIn("9903.76.01", result["additional_hts_codes"])
+
+    def test_adds_section_232_softwood_rule_for_statistical_suffixes(self) -> None:
+        records = [
+            {
+                "htsno": "4407.19.00",
+                "description": "Other",
+                "general": "Free",
+            },
+            {
+                "htsno": "4407.19.00.10",
+                "description": "Other",
+                "general": "",
+                "units": ["m3"],
+                "footnotes": [],
+            },
+        ]
+
+        result = build_lookup_result("4407190010", records)
+
+        self.assertIn("9903.76.01", result["additional_hts_codes"])
+
 
 if __name__ == "__main__":
     unittest.main()

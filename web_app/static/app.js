@@ -150,11 +150,29 @@ function collectWarnings() {
     }
     if (line.hts_description) {
       const suggested = String(line.hts_additional_codes || "").split(";").map((item) => item.trim()).filter(Boolean);
+      const detailMap = new Map(
+        (Array.isArray(line.hts_additional_details) ? line.hts_additional_details : [])
+          .map((item) => [String(item.code || "").trim(), item])
+          .filter(([code]) => code),
+      );
+      const formatSuggestion = (code) => {
+        const detail = detailMap.get(code);
+        return detail?.rate ? `${code} ${detail.rate}` : code;
+      };
+      const chapter99Digits = (code) => String(code || "").replace(/\D/g, "");
+      const isPolicyWideChapter99Code = (code) => {
+        const digits = chapter99Digits(code);
+        return digits === "99030301" || digits.startsWith("990305") || digits.startsWith("990306");
+      };
       const currentCodes = String(line.chapter_99_codes || "").split(";").map((item) => item.trim()).filter(Boolean);
-      const missing = suggested.filter((code) => !currentCodes.includes(code));
-      const possiblyStale = currentCodes.filter((code) => code !== "9903.03.01" && !suggested.includes(code));
+      const currentCodeDigits = new Set(currentCodes.map(chapter99Digits));
+      const suggestedCodeDigits = new Set(suggested.map(chapter99Digits));
+      const missing = suggested.filter((code) => !currentCodeDigits.has(chapter99Digits(code)));
+      const possiblyStale = currentCodes.filter(
+        (code) => !isPolicyWideChapter99Code(code) && !suggestedCodeDigits.has(chapter99Digits(code)),
+      );
       if (missing.length) {
-        warnings.push(`Line ${line.line_no}: HTS 提示附加税项 ${missing.join(", ")}，请人工确认`);
+        warnings.push(`Line ${line.line_no}: HTS 提示附加税项 ${missing.map(formatSuggestion).join(", ")}，请人工确认`);
       }
       if (possiblyStale.length) {
         warnings.push(`Line ${line.line_no}: 原附加税项 ${possiblyStale.join(", ")} 可能不再匹配新 HTS`);
@@ -227,6 +245,7 @@ async function lookupHts(index) {
       state.modifiedFields.add(`line:${line.page}:${line.line_no}:rate`);
     }
     line.hts_additional_codes = (result.additional_hts_codes || []).join("; ") || null;
+    line.hts_additional_details = result.additional_hts_details || [];
     renderLines();
     await recalculate();
   } catch (error) {
