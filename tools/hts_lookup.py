@@ -342,13 +342,22 @@ def normalized_units(raw_units: Any) -> list[str]:
     return units
 
 
-def static_additional_hts_details(digits: str, origin: Any = None) -> list[dict[str, str]]:
+def static_additional_hts_details(
+    digits: str,
+    origin: Any = None,
+    *,
+    include_origin_conditions: bool = False,
+) -> list[dict[str, str]]:
     details: list[dict[str, str]] = []
     origin_key = normalize_origin(origin)
     for rule in STATIC_ADDITIONAL_HTS_RULES:
         origin_keys = rule.get("origin_keys")
+        conditional_origin_keys: tuple[str, ...] = ()
         if origin_keys and origin_key not in origin_keys:
-            continue
+            if include_origin_conditions and origin_key is None and not rule.get("applies_to_all"):
+                conditional_origin_keys = tuple(str(key) for key in origin_keys)
+            else:
+                continue
         applies_to = rule.get("applies_to", ())
         matches_hts = bool(rule.get("applies_to_all")) or any(
             digits == target or (len(target) == 8 and digits.startswith(target))
@@ -360,14 +369,16 @@ def static_additional_hts_details(digits: str, origin: Any = None) -> list[dict[
                 if rule.get("origin_sensitive")
                 else rule
             )
-            details.append(
-                {
-                    "code": str(detail["code"]),
-                    "rate": str(detail["rate"]),
-                    "description": str(detail["description"]),
-                    "source": str(detail["source"]),
-                },
-            )
+            item = {
+                "code": str(detail["code"]),
+                "rate": str(detail["rate"]),
+                "description": str(detail["description"]),
+                "source": str(detail["source"]),
+            }
+            if conditional_origin_keys:
+                item["origin_condition"] = ", ".join(conditional_origin_keys)
+                item["condition"] = "Applies only when the country of origin is China"
+            details.append(item)
     return details
 
 
@@ -431,7 +442,7 @@ def build_lookup_result(code: str, records: list[dict[str, Any]], *, origin: Any
                         },
                     )
 
-    for detail in static_additional_hts_details(digits, origin):
+    for detail in static_additional_hts_details(digits, origin, include_origin_conditions=True):
         if not any(item["code"] == detail["code"] for item in additional_details):
             additional_details.append(detail)
 

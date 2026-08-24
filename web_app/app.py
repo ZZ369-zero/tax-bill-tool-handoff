@@ -40,7 +40,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.17"
+APP_VERSION = "0.1.18"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 
 
@@ -173,9 +173,25 @@ def document_origin(document: Any) -> str | None:
 
 
 def line_implies_china_origin(line: Any) -> bool:
-    return any(
+    if any(
         chapter_99_digits(code) == "99030531"
         for code in semicolon_values(getattr(line, "chapter_99_codes", None))
+    ):
+        return True
+
+    description = parser.re.sub(r"\s+", " ", display(getattr(line, "description", None))).upper()
+    if not description:
+        return False
+    china_phrases = (
+        "ARTICLE OF CHINA",
+        "ARTICLES OF CHINA",
+        "PRODUCT OF CHINA",
+        "PRODUCTS OF CHINA",
+        "PRDT OF CHINA",
+        "PRDTS OF CHINA",
+    )
+    return any(phrase in description for phrase in china_phrases) or (
+        "CHINA" in description and ("US NTE" in description or "NOTE 52" in description)
     )
 
 
@@ -1277,6 +1293,7 @@ def health() -> dict[str, str]:
         "section_232_wood_origin_routing": "9903.76.20-9903.76.24-for-UK-JP-EU-KR-TW",
         "china_section_301_static_rules": "9401-seating-9903.88.03-04-15-plus-9903.05.31",
         "china_origin_inference": "existing-9903.05.31-implies-CN-for-section-301-recalculation",
+        "china_origin_line_text": "article-product-prdts-of-china-implies-CN-for-section-301-recalculation",
         "static_asset_cache": "no-store-for-root-and-static-assets",
     }
 

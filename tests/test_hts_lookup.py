@@ -203,6 +203,28 @@ class HtsLookupTests(unittest.TestCase):
 
         self.assertEqual(details, [])
 
+    def test_china_section_301_tariffs_display_condition_when_origin_is_missing(self) -> None:
+        records = [
+            {
+                "htsno": "9401.69.60",
+                "description": "Other",
+                "general": "Free",
+            },
+            {
+                "htsno": "9401.69.60.11",
+                "description": "Other household",
+                "general": "",
+                "units": ["No."],
+                "footnotes": [],
+            },
+        ]
+
+        result = build_lookup_result("9401696011", records)
+
+        self.assertEqual(result["additional_hts_codes"], ["9903.88.04"])
+        self.assertEqual(result["additional_hts_details"][0]["rate"], "25%")
+        self.assertEqual(result["additional_hts_details"][0]["origin_condition"], "CN")
+
     def test_china_section_301_seating_page_mappings_cover_current_release(self) -> None:
         expected = {
             "9903.88.03": ("94012000", "94016160", "94016980", "94019990"),
@@ -234,7 +256,7 @@ class HtsLookupTests(unittest.TestCase):
         result = build_lookup_result("9401696011", records)
 
         self.assertNotIn("9903.76.02", result["additional_hts_codes"])
-        self.assertEqual(result["additional_hts_codes"], [])
+        self.assertEqual(result["additional_hts_codes"], ["9903.88.04"])
         self.assertEqual(section_232_wood_notes("9401696011"), result["section_232_wood_notes"])
         self.assertIn("not upholstered", result["section_232_wood_notes"][0]["description"])
 

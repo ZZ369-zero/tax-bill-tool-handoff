@@ -297,6 +297,19 @@ class CbpCalculationTests(unittest.TestCase):
         self.assertEqual(line.calculated_chapter_99_duty, "375.00")
         self.assertIn(line_field_key(line, "chapter_99_codes"), modified_fields)
 
+    def test_article_of_china_description_implies_china_origin_for_section_301(self) -> None:
+        line = tax_line("001", "1000", "FREE", "", net_quantity="1", net_unit="NO")
+        line.hts = "9401.69.6011"
+        line.description = "ARTICLE OF CHINA,US NTE 20(F) CHAIRS"
+        document = tax_document()
+
+        modified_fields = recalculate(document, [line], include_hmf=False)
+
+        self.assertEqual(line.chapter_99_codes, "9903.88.04; 9903.05.31")
+        self.assertEqual(line.chapter_99_rates, "25%; 12.5%")
+        self.assertEqual(line.calculated_chapter_99_duty, "375.00")
+        self.assertIn(line_field_key(line, "chapter_99_codes"), modified_fields)
+
 
 if __name__ == "__main__":
     unittest.main()

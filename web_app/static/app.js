@@ -164,7 +164,8 @@ function collectWarnings() {
       );
       const formatSuggestion = (code) => {
         const detail = detailMap.get(code);
-        return detail?.rate ? `${code} ${detail.rate}` : code;
+        const rateText = detail?.rate ? `${code} ${detail.rate}` : code;
+        return detail?.condition ? `${rateText}（${detail.condition}）` : rateText;
       };
       const chapter99Digits = (code) => String(code || "").replace(/\D/g, "");
       const isPolicyWideChapter99Code = (code) => {
