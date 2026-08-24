@@ -40,7 +40,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.14"
+APP_VERSION = "0.1.15"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 
 
@@ -1252,6 +1252,7 @@ def health() -> dict[str, str]:
         "chapter_99_auto_apply": "static-rules-added-before-recalculation-and-pdf-generation",
         "section_232_wood_notes": "non-upholstered-wooden-seats-9401.69.6011-6031-not-note37-covered",
         "section_232_wood_origin_routing": "9903.76.20-9903.76.24-for-UK-JP-EU-KR-TW",
+        "china_section_301_static_rules": "9401-seating-9903.88.03-04-15-plus-9903.05.31",
     }
 
 

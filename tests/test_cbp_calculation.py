@@ -270,6 +270,20 @@ class CbpCalculationTests(unittest.TestCase):
         self.assertEqual(line.chapter_99_rates, "15%")
         self.assertEqual(line.calculated_chapter_99_duty, "150.00")
 
+    def test_china_section_301_rules_participate_in_recalculation(self) -> None:
+        line = tax_line("001", "1000", "FREE", "", net_quantity="1", net_unit="NO")
+        line.hts = "9401.69.6011"
+        document = tax_document()
+        document.country_of_origin = "CN"
+
+        modified_fields = recalculate(document, [line], include_hmf=False)
+
+        self.assertEqual(line.chapter_99_codes, "9903.88.04; 9903.05.31")
+        self.assertEqual(line.chapter_99_rates, "25%; 12.5%")
+        self.assertEqual(line.calculated_chapter_99_duty, "375.00")
+        self.assertEqual(document.calculated_duty_total, "375.00")
+        self.assertIn(line_field_key(line, "chapter_99_codes"), modified_fields)
+
 
 if __name__ == "__main__":
     unittest.main()

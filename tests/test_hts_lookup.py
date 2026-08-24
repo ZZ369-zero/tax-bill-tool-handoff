@@ -161,6 +161,7 @@ class HtsLookupTests(unittest.TestCase):
         self.assertEqual(normalize_origin("Japan"), "JP")
         self.assertEqual(normalize_origin("Germany"), "EU")
         self.assertEqual(normalize_origin("Taiwan"), "TW")
+        self.assertEqual(normalize_origin("中国"), "CN")
 
         japan_details = static_additional_hts_details("9401614011", "Japan")
         taiwan_details = static_additional_hts_details("9403409060", "TW")
@@ -172,6 +173,47 @@ class HtsLookupTests(unittest.TestCase):
         self.assertEqual(taiwan_details[0]["rate"], "15%")
         self.assertEqual(softwood_details[0]["code"], "9903.76.01")
         self.assertEqual(softwood_details[0]["rate"], "10%")
+
+    def test_china_section_301_tariffs_apply_to_9401696011(self) -> None:
+        records = [
+            {
+                "htsno": "9401.69.60",
+                "description": "Other",
+                "general": "Free",
+            },
+            {
+                "htsno": "9401.69.60.11",
+                "description": "Other household",
+                "general": "",
+                "units": ["No."],
+                "footnotes": [],
+            },
+        ]
+
+        result = build_lookup_result("9401696011", records, origin="CN")
+
+        self.assertEqual(result["additional_hts_codes"], ["9903.88.04", "9903.05.31"])
+        self.assertEqual(
+            [detail["rate"] for detail in result["additional_hts_details"]],
+            ["25%", "12.5%"],
+        )
+
+    def test_china_section_301_tariffs_do_not_apply_without_china_origin(self) -> None:
+        details = static_additional_hts_details("9401696011", "JP")
+
+        self.assertEqual(details, [])
+
+    def test_china_section_301_seating_page_mappings_cover_current_release(self) -> None:
+        expected = {
+            "9903.88.03": ("94012000", "94016160", "94016980", "94019990"),
+            "9903.88.04": ("9401614011", "9401696011", "9401806030"),
+            "9903.88.15": ("9401696001", "9401710007", "94019925"),
+        }
+
+        for chapter_99_code, ordinary_codes in expected.items():
+            for ordinary_code in ordinary_codes:
+                details = static_additional_hts_details(ordinary_code, "China")
+                self.assertIn(chapter_99_code, [detail["code"] for detail in details])
 
     def test_section_232_wood_notes_explain_non_upholstered_wooden_seats(self) -> None:
         records = [

@@ -70,6 +70,10 @@ EU_ORIGIN_KEYS = {
 }
 
 ORIGIN_ALIASES = {
+    "CN": "CN",
+    "CHINA": "CN",
+    "PRC": "CN",
+    "PEOPLESREPUBLICOFCHINA": "CN",
     "GB": "GB",
     "UK": "GB",
     "UNITEDKINGDOM": "GB",
@@ -124,6 +128,75 @@ SECTION_232_WOOD_ORIGIN_OVERRIDES = {
 # depend solely on ordinary-line footnotes.
 STATIC_ADDITIONAL_HTS_RULES: tuple[dict[str, Any], ...] = (
     {
+        "code": "9903.88.03",
+        "rate": "25%",
+        "description": "Section 301 China Tariffs - seating products listed in U.S. note 20(f)",
+        "applies_to": (
+            "94012000",
+            "94013100",
+            "94013900",
+            "94014100",
+            "94014900",
+            "94015200",
+            "94015300",
+            "94015900",
+            "94016120",
+            "94016160",
+            "94016920",
+            "94016940",
+            "94016980",
+            "94019190",
+            "94019935",
+            "94019990",
+        ),
+        "origin_keys": ("CN",),
+        "source": "USITC China Tariffs current release; HTS 9903.88.03",
+    },
+    {
+        "code": "9903.88.04",
+        "rate": "25%",
+        "description": "Section 301 China Tariffs - seating products listed in U.S. note 20(g)",
+        "applies_to": (
+            "9401614011",
+            "9401614031",
+            "9401696011",
+            "9401696031",
+            "9401710008",
+            "9401710011",
+            "9401710031",
+            "9401790006",
+            "9401790011",
+            "9401790015",
+            "9401790025",
+            "9401790035",
+            "9401790046",
+            "9401790050",
+            "9401802005",
+            "9401802011",
+            "9401802031",
+            "9401804004",
+            "9401804006",
+            "9401804015",
+            "9401804026",
+            "9401804035",
+            "9401804046",
+            "9401806024",
+            "9401806025",
+            "9401806028",
+            "9401806030",
+        ),
+        "origin_keys": ("CN",),
+        "source": "USITC China Tariffs current release; HTS 9903.88.04",
+    },
+    {
+        "code": "9903.88.15",
+        "rate": "7.5%",
+        "description": "Section 301 China Tariffs - seating products listed in U.S. note 20(s)",
+        "applies_to": ("9401696001", "9401710007", "94019115", "94019120", "94019910", "94019925"),
+        "origin_keys": ("CN",),
+        "source": "USITC China Tariffs current release; HTS 9903.88.15",
+    },
+    {
         "code": "9903.76.01",
         "rate": "10%",
         "description": "Section 232 wood products - softwood timber and lumber products",
@@ -161,6 +234,14 @@ STATIC_ADDITIONAL_HTS_RULES: tuple[dict[str, Any], ...] = (
         "applies_to": ("9403409060", "9403608093", "9403910080"),
         "source": "USITC HTS Chapter 99 U.S. note 37(f); HTS 9903.76.03",
         "origin_sensitive": True,
+    },
+    {
+        "code": "9903.05.31",
+        "rate": "12.5%",
+        "description": "New Section 301 / U.S. note 52 - articles the product of China",
+        "applies_to_all": True,
+        "origin_keys": ("CN",),
+        "source": "USITC HTS Chapter 99 U.S. note 52; HTS 9903.05.31",
     },
 )
 
@@ -201,7 +282,10 @@ def format_hts(value: str) -> str:
 
 
 def normalize_origin(value: Any) -> str | None:
-    cleaned = re.sub(r"[^A-Z]", "", str(value or "").upper())
+    raw = str(value or "").upper()
+    if "中国" in raw or "中國" in raw:
+        return "CN"
+    cleaned = re.sub(r"[^A-Z]", "", raw)
     if not cleaned:
         return None
     if cleaned in ORIGIN_ALIASES:
@@ -262,7 +346,15 @@ def static_additional_hts_details(digits: str, origin: Any = None) -> list[dict[
     details: list[dict[str, str]] = []
     origin_key = normalize_origin(origin)
     for rule in STATIC_ADDITIONAL_HTS_RULES:
-        if any(digits == target or (len(target) == 8 and digits.startswith(target)) for target in rule["applies_to"]):
+        origin_keys = rule.get("origin_keys")
+        if origin_keys and origin_key not in origin_keys:
+            continue
+        applies_to = rule.get("applies_to", ())
+        matches_hts = bool(rule.get("applies_to_all")) or any(
+            digits == target or (len(target) == 8 and digits.startswith(target))
+            for target in applies_to
+        )
+        if matches_hts:
             detail = dict(
                 SECTION_232_WOOD_ORIGIN_OVERRIDES.get(origin_key, rule)
                 if rule.get("origin_sensitive")
