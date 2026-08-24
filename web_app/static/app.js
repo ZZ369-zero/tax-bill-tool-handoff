@@ -232,7 +232,12 @@ async function lookupHts(index) {
   }
   setStatus(`正在查询 HTS ${code}`, collectWarnings());
   try {
-    const response = await fetch(`/api/hts-lookup?code=${encodeURIComponent(code)}`);
+    const origin = state.document?.country_of_origin || state.document?.exporting_country || "";
+    const params = new URLSearchParams({ code });
+    if (origin && origin !== "-") {
+      params.set("origin", origin);
+    }
+    const response = await fetch(`/api/hts-lookup?${params.toString()}`);
     if (!response.ok) {
       throw new Error(await errorText(response));
     }

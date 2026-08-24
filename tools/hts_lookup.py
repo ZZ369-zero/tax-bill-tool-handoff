@@ -11,6 +11,112 @@ from urllib.request import Request, urlopen
 HTS_SEARCH_URL = "https://hts.usitc.gov/reststop/search"
 ADDITIONAL_HTS_PATTERN = re.compile(r"\b(99\d{2}\.\d{2}\.\d{2})\b")
 
+EU_ORIGIN_KEYS = {
+    "AT",
+    "AUSTRIA",
+    "BE",
+    "BELGIUM",
+    "BG",
+    "BULGARIA",
+    "HR",
+    "CROATIA",
+    "CY",
+    "CYPRUS",
+    "CZ",
+    "CZECHIA",
+    "CZECHREPUBLIC",
+    "DK",
+    "DENMARK",
+    "EE",
+    "ESTONIA",
+    "FI",
+    "FINLAND",
+    "FR",
+    "FRANCE",
+    "DE",
+    "GERMANY",
+    "GR",
+    "GREECE",
+    "HU",
+    "HUNGARY",
+    "IE",
+    "IRELAND",
+    "IT",
+    "ITALY",
+    "LV",
+    "LATVIA",
+    "LT",
+    "LITHUANIA",
+    "LU",
+    "LUXEMBOURG",
+    "MT",
+    "MALTA",
+    "NL",
+    "NETHERLANDS",
+    "PL",
+    "POLAND",
+    "PT",
+    "PORTUGAL",
+    "RO",
+    "ROMANIA",
+    "SK",
+    "SLOVAKIA",
+    "SI",
+    "SLOVENIA",
+    "ES",
+    "SPAIN",
+    "SE",
+    "SWEDEN",
+}
+
+ORIGIN_ALIASES = {
+    "GB": "GB",
+    "UK": "GB",
+    "UNITEDKINGDOM": "GB",
+    "GREATBRITAIN": "GB",
+    "JP": "JP",
+    "JAPAN": "JP",
+    "KR": "KR",
+    "KOREA": "KR",
+    "SOUTHKOREA": "KR",
+    "REPUBLICOFKOREA": "KR",
+    "TW": "TW",
+    "TAIWAN": "TW",
+}
+
+SECTION_232_WOOD_ORIGIN_OVERRIDES = {
+    "GB": {
+        "code": "9903.76.20",
+        "rate": "10%",
+        "description": "Section 232 wood products - United Kingdom origin",
+        "source": "USITC HTS Chapter 99 U.S. note 37(h); HTS 9903.76.20",
+    },
+    "JP": {
+        "code": "9903.76.21",
+        "rate": "15%",
+        "description": "Section 232 wood products - Japan origin",
+        "source": "USITC HTS Chapter 99 U.S. note 37(i); HTS 9903.76.21",
+    },
+    "EU": {
+        "code": "9903.76.22",
+        "rate": "15%",
+        "description": "Section 232 wood products - European Union origin",
+        "source": "USITC HTS Chapter 99 U.S. note 37(j); HTS 9903.76.22",
+    },
+    "KR": {
+        "code": "9903.76.23",
+        "rate": "15%",
+        "description": "Section 232 wood products - South Korea origin",
+        "source": "USITC HTS Chapter 99 U.S. note 37(l); HTS 9903.76.23",
+    },
+    "TW": {
+        "code": "9903.76.24",
+        "rate": "15%",
+        "description": "Section 232 wood products - Taiwan origin",
+        "source": "USITC HTS Chapter 99 U.S. note 37(m); HTS 9903.76.24",
+    },
+}
+
 # Some Chapter 99 provisions are not exposed as footnotes on every ordinary HTS
 # line in the USITC search result. USITC Chapter 99 U.S. note 37 lists the
 # affected ordinary HTS subheadings and matching Chapter 99 reporting number.
@@ -46,6 +152,7 @@ STATIC_ADDITIONAL_HTS_RULES: tuple[dict[str, Any], ...] = (
         "description": "Section 232 wood products - upholstered wooden furniture products",
         "applies_to": ("9401614011", "9401614031", "9401616011", "9401616031"),
         "source": "USITC HTS Chapter 99 U.S. note 37(d); HTS 9903.76.02",
+        "origin_sensitive": True,
     },
     {
         "code": "9903.76.03",
@@ -53,6 +160,7 @@ STATIC_ADDITIONAL_HTS_RULES: tuple[dict[str, Any], ...] = (
         "description": "Section 232 wood products - kitchen cabinets, vanities, and parts",
         "applies_to": ("9403409060", "9403608093", "9403910080"),
         "source": "USITC HTS Chapter 99 U.S. note 37(f); HTS 9903.76.03",
+        "origin_sensitive": True,
     },
 )
 
@@ -90,6 +198,17 @@ def format_hts(value: str) -> str:
     if len(digits) == 10:
         return f"{digits[:4]}.{digits[4:6]}.{digits[6:8]}.{digits[8:10]}"
     raise ValueError("HTS code must contain 4, 6, 8, or 10 digits")
+
+
+def normalize_origin(value: Any) -> str | None:
+    cleaned = re.sub(r"[^A-Z]", "", str(value or "").upper())
+    if not cleaned:
+        return None
+    if cleaned in ORIGIN_ALIASES:
+        return ORIGIN_ALIASES[cleaned]
+    if cleaned in EU_ORIGIN_KEYS:
+        return "EU"
+    return cleaned[:2] if len(cleaned) == 2 else cleaned
 
 
 def record_digits(record: dict[str, Any]) -> str:
@@ -139,16 +258,22 @@ def normalized_units(raw_units: Any) -> list[str]:
     return units
 
 
-def static_additional_hts_details(digits: str) -> list[dict[str, str]]:
+def static_additional_hts_details(digits: str, origin: Any = None) -> list[dict[str, str]]:
     details: list[dict[str, str]] = []
+    origin_key = normalize_origin(origin)
     for rule in STATIC_ADDITIONAL_HTS_RULES:
         if any(digits == target or (len(target) == 8 and digits.startswith(target)) for target in rule["applies_to"]):
+            detail = dict(
+                SECTION_232_WOOD_ORIGIN_OVERRIDES.get(origin_key, rule)
+                if rule.get("origin_sensitive")
+                else rule
+            )
             details.append(
                 {
-                    "code": str(rule["code"]),
-                    "rate": str(rule["rate"]),
-                    "description": str(rule["description"]),
-                    "source": str(rule["source"]),
+                    "code": str(detail["code"]),
+                    "rate": str(detail["rate"]),
+                    "description": str(detail["description"]),
+                    "source": str(detail["source"]),
                 },
             )
     return details
@@ -168,7 +293,7 @@ def section_232_wood_notes(digits: str) -> list[dict[str, str]]:
     return notes
 
 
-def build_lookup_result(code: str, records: list[dict[str, Any]]) -> dict[str, Any]:
+def build_lookup_result(code: str, records: list[dict[str, Any]], *, origin: Any = None) -> dict[str, Any]:
     digits = hts_digits(code)
     relevant = {
         str(record.get("htsno")): record
@@ -214,7 +339,7 @@ def build_lookup_result(code: str, records: list[dict[str, Any]]) -> dict[str, A
                         },
                     )
 
-    for detail in static_additional_hts_details(digits):
+    for detail in static_additional_hts_details(digits, origin):
         if not any(item["code"] == detail["code"] for item in additional_details):
             additional_details.append(detail)
 
@@ -230,11 +355,12 @@ def build_lookup_result(code: str, records: list[dict[str, Any]]) -> dict[str, A
         "additional_hts_codes": [str(item["code"]) for item in additional_details],
         "additional_hts_details": additional_details,
         "section_232_wood_notes": section_232_wood_notes(digits),
+        "origin_key": normalize_origin(origin),
         "source": "USITC HTS REST API",
     }
 
 
-def lookup_hts(code: str) -> dict[str, Any]:
+def lookup_hts(code: str, *, origin: Any = None) -> dict[str, Any]:
     digits = hts_digits(code)
     keywords = [format_hts(digits[:length]) for length in (4, 6, 8, len(digits))]
     records: dict[str, dict[str, Any]] = {}
@@ -243,4 +369,4 @@ def lookup_hts(code: str) -> dict[str, Any]:
             key = str(record.get("htsno") or "")
             if key:
                 records[key] = dict(record)
-    return build_lookup_result(digits, list(records.values()))
+    return build_lookup_result(digits, list(records.values()), origin=origin)

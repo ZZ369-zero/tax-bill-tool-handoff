@@ -258,6 +258,18 @@ class CbpCalculationTests(unittest.TestCase):
         self.assertEqual(line.chapter_99_rates, "12.5%; 25%")
         self.assertEqual(modified_fields, ())
 
+    def test_static_section_232_wood_rule_uses_origin_specific_heading(self) -> None:
+        line = tax_line("001", "1000", "FREE", "", net_quantity="1", net_unit="NO")
+        line.hts = "9401.61.4011"
+        document = tax_document()
+        document.country_of_origin = "JP"
+
+        recalculate(document, [line], include_hmf=False)
+
+        self.assertEqual(line.chapter_99_codes, "9903.76.21")
+        self.assertEqual(line.chapter_99_rates, "15%")
+        self.assertEqual(line.calculated_chapter_99_duty, "150.00")
+
 
 if __name__ == "__main__":
     unittest.main()

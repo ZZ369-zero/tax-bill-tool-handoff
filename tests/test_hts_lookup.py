@@ -6,6 +6,7 @@ from tools.hts_lookup import (
     build_lookup_result,
     format_hts,
     normalized_units,
+    normalize_origin,
     section_232_wood_notes,
     static_additional_hts_details,
 )
@@ -155,6 +156,22 @@ class HtsLookupTests(unittest.TestCase):
             for ordinary_code in ordinary_codes:
                 details = static_additional_hts_details(ordinary_code)
                 self.assertIn(chapter_99_code, [detail["code"] for detail in details])
+
+    def test_section_232_wood_country_specific_headings_are_origin_aware(self) -> None:
+        self.assertEqual(normalize_origin("Japan"), "JP")
+        self.assertEqual(normalize_origin("Germany"), "EU")
+        self.assertEqual(normalize_origin("Taiwan"), "TW")
+
+        japan_details = static_additional_hts_details("9401614011", "Japan")
+        taiwan_details = static_additional_hts_details("9403409060", "TW")
+        softwood_details = static_additional_hts_details("44071900", "Japan")
+
+        self.assertEqual(japan_details[0]["code"], "9903.76.21")
+        self.assertEqual(japan_details[0]["rate"], "15%")
+        self.assertEqual(taiwan_details[0]["code"], "9903.76.24")
+        self.assertEqual(taiwan_details[0]["rate"], "15%")
+        self.assertEqual(softwood_details[0]["code"], "9903.76.01")
+        self.assertEqual(softwood_details[0]["rate"], "10%")
 
     def test_section_232_wood_notes_explain_non_upholstered_wooden_seats(self) -> None:
         records = [

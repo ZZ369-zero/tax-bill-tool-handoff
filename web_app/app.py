@@ -40,7 +40,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.13"
+APP_VERSION = "0.1.14"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 
 
@@ -159,16 +159,21 @@ def append_semicolon_values(existing: Any, additions: list[str]) -> str | None:
     return "; ".join(values) or None
 
 
-def sync_static_chapter_99(lines: list[Any]) -> tuple[str, ...]:
+def document_origin(document: Any) -> str | None:
+    return display(getattr(document, "country_of_origin", None)) or display(getattr(document, "exporting_country", None)) or None
+
+
+def sync_static_chapter_99(lines: list[Any], *, document: Any = None) -> tuple[str, ...]:
     """Apply locally maintained Chapter 99 mappings that USITC footnotes miss."""
     modified_fields: list[str] = []
+    origin = document_origin(document) if document is not None else None
     for line in lines:
         try:
             digits = lookup_hts_digits(display(line.hts))
         except ValueError:
             continue
 
-        details = static_additional_hts_details(digits)
+        details = static_additional_hts_details(digits, origin)
         if not details:
             continue
 
@@ -213,7 +218,7 @@ def sum_entered_value(lines: list[Any]) -> Decimal | None:
 
 def recalculate(document: Any, lines: list[Any], *, include_hmf: bool) -> tuple[str, ...]:
     reset_document_calculated_fields(document)
-    static_chapter_99_fields = sync_static_chapter_99(lines)
+    static_chapter_99_fields = sync_static_chapter_99(lines, document=document)
     for line in lines:
         reset_calculated_fields(line)
         raw_entered_value = line.entered_value
@@ -1246,6 +1251,7 @@ def health() -> dict[str, str]:
         "chapter_99_static_rules": "section-232-wood-products-9903.76.01-9903.76.03",
         "chapter_99_auto_apply": "static-rules-added-before-recalculation-and-pdf-generation",
         "section_232_wood_notes": "non-upholstered-wooden-seats-9401.69.6011-6031-not-note37-covered",
+        "section_232_wood_origin_routing": "9903.76.20-9903.76.24-for-UK-JP-EU-KR-TW",
     }
 
 
@@ -1292,9 +1298,9 @@ def friendly_error_detail(action: str, exc: Exception) -> str:
 
 
 @app.get("/api/hts-lookup")
-def hts_lookup(code: str) -> dict[str, Any]:
+def hts_lookup(code: str, origin: str | None = None) -> dict[str, Any]:
     try:
-        return lookup_hts(code)
+        return lookup_hts(code, origin=origin)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except LookupError as exc:
