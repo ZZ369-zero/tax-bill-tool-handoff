@@ -148,6 +148,13 @@ function collectWarnings() {
     if (line.parse_notes) {
       warnings.push(`Line ${line.line_no}: ${line.parse_notes}`);
     }
+    if (Array.isArray(line.section_232_wood_notes)) {
+      for (const note of line.section_232_wood_notes) {
+        if (note?.description) {
+          warnings.push(`Line ${line.line_no}: ${note.description}`);
+        }
+      }
+    }
     if (line.hts_description) {
       const suggested = String(line.hts_additional_codes || "").split(";").map((item) => item.trim()).filter(Boolean);
       const detailMap = new Map(
@@ -246,6 +253,7 @@ async function lookupHts(index) {
     }
     line.hts_additional_codes = (result.additional_hts_codes || []).join("; ") || null;
     line.hts_additional_details = result.additional_hts_details || [];
+    line.section_232_wood_notes = result.section_232_wood_notes || [];
     renderLines();
     await recalculate();
   } catch (error) {

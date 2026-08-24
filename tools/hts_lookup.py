@@ -12,10 +12,10 @@ HTS_SEARCH_URL = "https://hts.usitc.gov/reststop/search"
 ADDITIONAL_HTS_PATTERN = re.compile(r"\b(99\d{2}\.\d{2}\.\d{2})\b")
 
 # Some Chapter 99 provisions are not exposed as footnotes on every ordinary HTS
-# line in the USITC search result. CBP guidance for the Section 232 wood
-# products action lists affected ordinary HTS subheadings and the matching
-# Chapter 99 reporting number. Keep these explicit reverse mappings here so the
-# UI/batch workflow does not depend solely on ordinary-line footnotes.
+# line in the USITC search result. USITC Chapter 99 U.S. note 37 lists the
+# affected ordinary HTS subheadings and matching Chapter 99 reporting number.
+# Keep these explicit reverse mappings here so the UI/batch workflow does not
+# depend solely on ordinary-line footnotes.
 STATIC_ADDITIONAL_HTS_RULES: tuple[dict[str, Any], ...] = (
     {
         "code": "9903.76.01",
@@ -38,21 +38,36 @@ STATIC_ADDITIONAL_HTS_RULES: tuple[dict[str, Any], ...] = (
             "44071400",
             "44071900",
         ),
-        "source": "CBP CSMS 3f69699; USITC HTS 9903.76.01",
+        "source": "USITC HTS Chapter 99 U.S. note 37(b); HTS 9903.76.01",
     },
     {
         "code": "9903.76.02",
         "rate": "25%",
         "description": "Section 232 wood products - upholstered wooden furniture products",
         "applies_to": ("9401614011", "9401614031", "9401616011", "9401616031"),
-        "source": "CBP CSMS 3f69699; USITC HTS 9903.76.02",
+        "source": "USITC HTS Chapter 99 U.S. note 37(d); HTS 9903.76.02",
     },
     {
         "code": "9903.76.03",
         "rate": "25%",
         "description": "Section 232 wood products - kitchen cabinets, vanities, and parts",
         "applies_to": ("9403409060", "9403608093", "9403910080"),
-        "source": "CBP CSMS 3f69699; USITC HTS 9903.76.03",
+        "source": "USITC HTS Chapter 99 U.S. note 37(f); HTS 9903.76.03",
+    },
+)
+
+SECTION_232_WOOD_NON_COVERED_NOTES: tuple[dict[str, Any], ...] = (
+    {
+        "applies_to": ("9401696011", "9401696031"),
+        "status": "not_covered",
+        "description": (
+            "Section 232 wood products: HTS 9401.69.60.11/31 are other seats with wooden "
+            "frames, not upholstered. Current USITC Chapter 99 U.S. note 37(d) lists "
+            "upholstered wooden furniture under HTS 9401.61.40.11/31 and 9401.61.60.11/31; "
+            "note 37(f) lists kitchen cabinets, vanities, and parts under HTS 9403.40.90.60, "
+            "9403.60.80.93, and 9403.91.00.80."
+        ),
+        "source": "USITC HTS Chapter 99 U.S. note 37(d) and 37(f)",
     },
 )
 
@@ -139,6 +154,20 @@ def static_additional_hts_details(digits: str) -> list[dict[str, str]]:
     return details
 
 
+def section_232_wood_notes(digits: str) -> list[dict[str, str]]:
+    notes: list[dict[str, str]] = []
+    for note in SECTION_232_WOOD_NON_COVERED_NOTES:
+        if digits in note["applies_to"]:
+            notes.append(
+                {
+                    "status": str(note["status"]),
+                    "description": str(note["description"]),
+                    "source": str(note["source"]),
+                },
+            )
+    return notes
+
+
 def build_lookup_result(code: str, records: list[dict[str, Any]]) -> dict[str, Any]:
     digits = hts_digits(code)
     relevant = {
@@ -200,6 +229,7 @@ def build_lookup_result(code: str, records: list[dict[str, Any]]) -> dict[str, A
         "column_2_rate": str(rate_record.get("other") or "").strip() or None,
         "additional_hts_codes": [str(item["code"]) for item in additional_details],
         "additional_hts_details": additional_details,
+        "section_232_wood_notes": section_232_wood_notes(digits),
         "source": "USITC HTS REST API",
     }
 

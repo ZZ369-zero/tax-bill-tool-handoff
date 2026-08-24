@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import unittest
 
-from tools.hts_lookup import build_lookup_result, format_hts, normalized_units
+from tools.hts_lookup import (
+    build_lookup_result,
+    format_hts,
+    normalized_units,
+    section_232_wood_notes,
+    static_additional_hts_details,
+)
 
 
 class HtsLookupTests(unittest.TestCase):
@@ -62,7 +68,7 @@ class HtsLookupTests(unittest.TestCase):
                 "code": "9903.76.02",
                 "rate": "25%",
                 "description": "Section 232 wood products - upholstered wooden furniture products",
-                "source": "CBP CSMS 3f69699; USITC HTS 9903.76.02",
+                "source": "USITC HTS Chapter 99 U.S. note 37(d); HTS 9903.76.02",
             },
             result["additional_hts_details"],
         )
@@ -121,6 +127,57 @@ class HtsLookupTests(unittest.TestCase):
         result = build_lookup_result("4407190010", records)
 
         self.assertIn("9903.76.01", result["additional_hts_codes"])
+
+    def test_section_232_wood_current_note_37_covered_lists_are_complete(self) -> None:
+        expected = {
+            "9903.76.01": (
+                "44031100",
+                "44032101",
+                "44032201",
+                "44032301",
+                "44032401",
+                "44032501",
+                "44032601",
+                "44039901",
+                "44061100",
+                "44069100",
+                "44071100",
+                "44071200",
+                "44071300",
+                "44071400",
+                "44071900",
+            ),
+            "9903.76.02": ("9401614011", "9401614031", "9401616011", "9401616031"),
+            "9903.76.03": ("9403409060", "9403608093", "9403910080"),
+        }
+
+        for chapter_99_code, ordinary_codes in expected.items():
+            for ordinary_code in ordinary_codes:
+                details = static_additional_hts_details(ordinary_code)
+                self.assertIn(chapter_99_code, [detail["code"] for detail in details])
+
+    def test_section_232_wood_notes_explain_non_upholstered_wooden_seats(self) -> None:
+        records = [
+            {
+                "htsno": "9401.69.60",
+                "description": "Other",
+                "general": "Free",
+            },
+            {
+                "htsno": "9401.69.60.11",
+                "description": "Other household",
+                "general": "",
+                "units": ["No."],
+                "footnotes": [],
+            },
+        ]
+
+        result = build_lookup_result("9401696011", records)
+
+        self.assertNotIn("9903.76.02", result["additional_hts_codes"])
+        self.assertEqual(result["additional_hts_codes"], [])
+        self.assertEqual(section_232_wood_notes("9401696011"), result["section_232_wood_notes"])
+        self.assertIn("not upholstered", result["section_232_wood_notes"][0]["description"])
 
 
 if __name__ == "__main__":
