@@ -341,6 +341,89 @@ class PdfTextReplacementTests(unittest.TestCase):
         self.assertEqual(footer_replacements["invoice value"].alignment, "right")
         self.assertEqual(footer_replacements["invoice entered value"].alignment, "right")
 
+    def test_inserts_new_chapter_99_row_when_static_rule_is_added(self) -> None:
+        original_document = SimpleNamespace(
+            pages=1,
+            total_entered_value="1000",
+            mpf_total="33.58",
+            hmf_total=None,
+            total_other_fees="33.58",
+            other_total="33.58",
+            duty_total="125.00",
+            grand_total="158.58",
+            invoice_value="1000",
+            invoice_entered_value="1000",
+        )
+        document = SimpleNamespace(
+            total_entered_value="1000",
+            calculated_mpf_total="33.58",
+            calculated_hmf_total=None,
+            calculated_other_total="33.58",
+            calculated_duty_total="375.00",
+            calculated_grand_total="408.58",
+            invoice_value="1000",
+            invoice_entered_value="1000",
+        )
+        original_line = SimpleNamespace(
+            page=1,
+            line_no="001",
+            hts="9401.61.4011",
+            gross_weight="10",
+            gross_unit="KG",
+            net_quantity="1",
+            net_unit="NO",
+            entered_value="1000",
+            rate="FREE",
+            duty_amount="0.00",
+            chapter_99_codes="9903.05.31",
+            chapter_99_amounts="125.00",
+            mpf_amount="33.58",
+            hmf_amount=None,
+        )
+        line = SimpleNamespace(
+            page=1,
+            line_no="001",
+            hts="9401.61.4011",
+            gross_weight="10",
+            gross_unit="KG",
+            net_quantity="1",
+            net_unit="NO",
+            entered_value="1000",
+            rate="FREE",
+            chapter_99_codes="9903.05.31; 9903.76.02",
+            chapter_99_rates="12.5%; 25%",
+            calculated_base_duty="0.00",
+            calculated_mpf_amount="33.58",
+            calculated_hmf_amount=None,
+        )
+        parsed = SimpleNamespace(document=original_document, lines=[original_line])
+
+        with patch("web_app.app.parser.parse_pdf", return_value=parsed), patch(
+            "web_app.app.original_line_targets",
+            return_value={
+                (1, "001"): {
+                    "original": original_line,
+                    "hts_y": 360,
+                    "chapter_ys": [350],
+                    "mpf_y": 320,
+                    "hmf_y": None,
+                }
+            },
+        ):
+            replacements = build_pdf_text_replacements(
+                Path("source.pdf"),
+                document,
+                [line],
+                [line_field_key(line, "chapter_99_rates")],
+            )
+
+        by_field = {replacement.field: replacement for replacement in replacements}
+        self.assertEqual(by_field["line 001 chapter 99 code 2"].new_text, "9903.76.02")
+        self.assertEqual(by_field["line 001 chapter 99 rate 2"].new_text, "25%")
+        self.assertEqual(by_field["line 001 chapter 99 duty 2 inserted"].new_text, "$250.00")
+        self.assertEqual(by_field["line 001 chapter 99 code 2"].y, 340)
+        self.assertEqual(by_field["duty total"].new_text, "$375.00")
+
 
 if __name__ == "__main__":
     unittest.main()

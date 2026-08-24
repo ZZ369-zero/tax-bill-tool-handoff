@@ -24,7 +24,8 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfgen import canvas
 
 from tools.excel_adjustment import apply_second_sheet
-from tools.hts_lookup import lookup_hts
+from tools.hts_lookup import hts_digits as lookup_hts_digits
+from tools.hts_lookup import lookup_hts, static_additional_hts_details
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -39,7 +40,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.11"
+APP_VERSION = "0.1.12"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 
 
@@ -144,6 +145,61 @@ def reset_document_calculated_fields(document: Any) -> None:
         setattr(document, field_name, None)
 
 
+def semicolon_values(value: Any) -> list[str]:
+    return [item.strip() for item in display(value).split(";") if item.strip()]
+
+
+def chapter_99_digits(value: Any) -> str:
+    return parser.re.sub(r"\D", "", display(value))
+
+
+def append_semicolon_values(existing: Any, additions: list[str]) -> str | None:
+    values = semicolon_values(existing)
+    values.extend(additions)
+    return "; ".join(values) or None
+
+
+def sync_static_chapter_99(lines: list[Any]) -> tuple[str, ...]:
+    """Apply locally maintained Chapter 99 mappings that USITC footnotes miss."""
+    modified_fields: list[str] = []
+    for line in lines:
+        try:
+            digits = lookup_hts_digits(display(line.hts))
+        except ValueError:
+            continue
+
+        details = static_additional_hts_details(digits)
+        if not details:
+            continue
+
+        existing_codes = semicolon_values(line.chapter_99_codes)
+        existing_digits = {chapter_99_digits(code) for code in existing_codes}
+        missing_details = [
+            detail
+            for detail in details
+            if chapter_99_digits(detail.get("code")) not in existing_digits
+        ]
+        line.hts_additional_codes = "; ".join(detail["code"] for detail in details)
+        if not missing_details:
+            continue
+
+        line.chapter_99_codes = append_semicolon_values(
+            line.chapter_99_codes,
+            [detail["code"] for detail in missing_details],
+        )
+        line.chapter_99_rates = append_semicolon_values(
+            line.chapter_99_rates,
+            [detail["rate"] for detail in missing_details],
+        )
+
+        for field_name in ("chapter_99_codes", "chapter_99_rates"):
+            field_key = line_field_key(line, field_name)
+            if field_key not in modified_fields:
+                modified_fields.append(field_key)
+
+    return tuple(modified_fields)
+
+
 def sum_entered_value(lines: list[Any]) -> Decimal | None:
     total = Decimal("0")
     has_value = False
@@ -155,8 +211,9 @@ def sum_entered_value(lines: list[Any]) -> Decimal | None:
     return total if has_value else None
 
 
-def recalculate(document: Any, lines: list[Any], *, include_hmf: bool) -> None:
+def recalculate(document: Any, lines: list[Any], *, include_hmf: bool) -> tuple[str, ...]:
     reset_document_calculated_fields(document)
+    static_chapter_99_fields = sync_static_chapter_99(lines)
     for line in lines:
         reset_calculated_fields(line)
         raw_entered_value = line.entered_value
@@ -240,6 +297,7 @@ def recalculate(document: Any, lines: list[Any], *, include_hmf: bool) -> None:
         document.grand_total,
         document.calculated_grand_total,
     )
+    return static_chapter_99_fields
 
 
 def normalize_transport_mode(value: str | None) -> str:
@@ -557,7 +615,7 @@ def line_validation_errors(lines: list[Any], modified_fields: list[str] | set[st
     for line in lines:
         calculation_modified = any(
             line_field_key(line, field_name) in modified
-            for field_name in ("hts", "net_quantity", "entered_value", "rate")
+            for field_name in ("hts", "net_quantity", "entered_value", "rate", "chapter_99_codes", "chapter_99_rates")
         )
         if calculation_modified and line.rate:
             calculated_duty = parser.calculate_duty_for_rate(
@@ -633,7 +691,11 @@ def build_pdf_text_replacements(
         entered_value_changed = line_field_key(line, "entered_value") in modified
         rate_changed = line_field_key(line, "rate") in modified
         hts_changed = line_field_key(line, "hts") in modified
-        line_duty_changed = net_quantity_changed or entered_value_changed or rate_changed
+        chapter_99_changed = (
+            line_field_key(line, "chapter_99_codes") in modified
+            or line_field_key(line, "chapter_99_rates") in modified
+        )
+        line_duty_changed = net_quantity_changed or entered_value_changed or rate_changed or chapter_99_changed
         target = targets.get((line.page, line.line_no))
         if target is None:
             raise ValueError(f"Unable to locate line {line.line_no} on page {line.page} in the original PDF")
@@ -760,11 +822,11 @@ def build_pdf_text_replacements(
                 y=hts_y,
             )
 
-        if entered_value_changed or mpf_changed:
+        if entered_value_changed or chapter_99_changed or mpf_changed:
             old_chapter_amounts = money_values(original_line.chapter_99_amounts)
             new_chapter_amounts = calculated_chapter_amounts(line)
             chapter_ys = target.get("chapter_ys") or []
-            if entered_value_changed:
+            if entered_value_changed or chapter_99_changed:
                 for index, (old_amount, new_amount) in enumerate(zip(old_chapter_amounts, new_chapter_amounts)):
                     add_replacement(
                         replacements,
@@ -777,6 +839,59 @@ def build_pdf_text_replacements(
                         x_min=530,
                         x_max=590,
                         y=chapter_ys[index] if index < len(chapter_ys) else None,
+                    )
+                original_chapter_digits = {
+                    chapter_99_digits(code)
+                    for code in semicolon_values(getattr(original_line, "chapter_99_codes", None))
+                }
+                new_chapter_codes = semicolon_values(getattr(line, "chapter_99_codes", None))
+                new_chapter_rates = semicolon_values(getattr(line, "chapter_99_rates", None))
+                y_anchor = chapter_ys[-1] if chapter_ys else hts_y
+                inserted_count = 0
+                for index, code in enumerate(new_chapter_codes):
+                    if chapter_99_digits(code) in original_chapter_digits:
+                        continue
+                    inserted_count += 1
+                    y = None if y_anchor is None else float(y_anchor) - 10.0 * inserted_count
+                    rate_text = new_chapter_rates[index] if index < len(new_chapter_rates) else ""
+                    amount_text = new_chapter_amounts[index] if index < len(new_chapter_amounts) else ""
+                    add_replacement(
+                        replacements,
+                        page=line.page,
+                        field=f"line {line.line_no} chapter 99 code {index + 1}",
+                        old_value=None,
+                        new_value=code,
+                        old_text="",
+                        new_text=code,
+                        x_min=67,
+                        x_max=190,
+                        y=y,
+                        alignment="left",
+                    )
+                    add_replacement(
+                        replacements,
+                        page=line.page,
+                        field=f"line {line.line_no} chapter 99 rate {index + 1}",
+                        old_value=None,
+                        new_value=rate_text,
+                        old_text="",
+                        new_text=rate_text,
+                        x_min=395,
+                        x_max=535,
+                        y=y,
+                        alignment="left",
+                    )
+                    add_replacement(
+                        replacements,
+                        page=line.page,
+                        field=f"line {line.line_no} chapter 99 duty {index + 1} inserted",
+                        old_value=None,
+                        new_value=amount_text,
+                        old_text="",
+                        new_text=format_pdf_money(amount_text),
+                        x_min=530,
+                        x_max=590,
+                        y=y,
                     )
             add_replacement(
                 replacements,
@@ -1129,6 +1244,7 @@ def health() -> dict[str, str]:
         "entered_value_parsing": "split-entered-value-and-rate-columns",
         "bl_awb_normalization": "carrier-prefix-space-removed",
         "chapter_99_static_rules": "section-232-wood-products-9903.76.01-9903.76.03",
+        "chapter_99_auto_apply": "static-rules-added-before-recalculation-and-pdf-generation",
     }
 
 
@@ -1206,7 +1322,7 @@ async def parse_upload(file: UploadFile = File(...)) -> dict[str, Any]:
         key = f"upload|{Path(file.filename).stem}"
         parsed = parser.parse_pdf(saved_path, "original", key)
         include_hmf = parsed_has_hmf(parsed.document, parsed.lines)
-        recalculate(parsed.document, parsed.lines, include_hmf=include_hmf)
+        static_modified_fields = recalculate(parsed.document, parsed.lines, include_hmf=include_hmf)
         parsed.document.source_file = file.filename
         for line in parsed.lines:
             line.source_file = file.filename
@@ -1217,6 +1333,7 @@ async def parse_upload(file: UploadFile = File(...)) -> dict[str, Any]:
             include_hmf=include_hmf,
             upload_id=saved_path.name,
             transport_mode=transport_mode,
+            modified_fields=list(static_modified_fields),
         )
     except HTTPException:
         raise
@@ -1230,15 +1347,16 @@ def recalculate_payload(payload: RecalculateRequest) -> dict[str, Any]:
         document = dataclass_from_dict(parser.TaxDocument, payload.document)
         lines = [dataclass_from_dict(parser.TaxLine, line) for line in payload.lines]
         document.line_count = len(lines)
-        recalculate(document, lines, include_hmf=payload.include_hmf)
-        validation_errors = line_validation_errors(lines, payload.modified_fields)
+        static_modified_fields = recalculate(document, lines, include_hmf=payload.include_hmf)
+        modified_fields = list(dict.fromkeys([*payload.modified_fields, *static_modified_fields]))
+        validation_errors = line_validation_errors(lines, modified_fields)
         return response_payload(
             document,
             lines,
             include_hmf=payload.include_hmf,
             upload_id=payload.upload_id,
             transport_mode=payload.transport_mode,
-            modified_fields=payload.modified_fields,
+            modified_fields=modified_fields,
             validation_errors=validation_errors,
         )
     except Exception as exc:
@@ -1288,11 +1406,11 @@ async def generate_from_excel(
             include_hmf=include_hmf,
             transport_mode=normalized_transport_mode,
         )
-        recalculate(parsed.document, parsed.lines, include_hmf=include_hmf)
-        validation_errors = line_validation_errors(parsed.lines, adjustment.modified_fields)
+        static_modified_fields = recalculate(parsed.document, parsed.lines, include_hmf=include_hmf)
+        modified_fields = list(dict.fromkeys([*adjustment.modified_fields, *static_modified_fields]))
+        validation_errors = line_validation_errors(parsed.lines, modified_fields)
         if validation_errors:
             raise ValueError("; ".join(validation_errors))
-        modified_fields = list(adjustment.modified_fields)
         if include_hmf != original_has_hmf:
             modified_fields.append("document:transport_mode")
         pdf_bytes = generate_adjusted_pdf(
@@ -1330,12 +1448,13 @@ def generate_pdf(payload: GeneratePdfRequest) -> StreamingResponse:
         document = dataclass_from_dict(parser.TaxDocument, payload.document)
         lines = [dataclass_from_dict(parser.TaxLine, line) for line in payload.lines]
         document.line_count = len(lines)
-        recalculate(document, lines, include_hmf=payload.include_hmf)
-        validation_errors = line_validation_errors(lines, payload.modified_fields)
+        static_modified_fields = recalculate(document, lines, include_hmf=payload.include_hmf)
+        modified_fields = list(dict.fromkeys([*payload.modified_fields, *static_modified_fields]))
+        validation_errors = line_validation_errors(lines, modified_fields)
         if validation_errors:
             raise ValueError("; ".join(validation_errors))
         original_path = upload_path(payload.upload_id)
-        pdf_bytes = generate_adjusted_pdf(original_path, document, lines, payload.modified_fields)
+        pdf_bytes = generate_adjusted_pdf(original_path, document, lines, modified_fields)
         filename = f"{clean_filename(document.source_file)}-adjusted-7501.pdf"
         return StreamingResponse(
             BytesIO(pdf_bytes),

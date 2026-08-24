@@ -231,6 +231,33 @@ class CbpCalculationTests(unittest.TestCase):
         self.assertEqual(line_mpf_total, Decimal("40.61"))
         self.assertEqual(lines[1].calculated_mpf_amount, "2.37")
 
+    def test_static_section_232_wood_rule_participates_in_recalculation(self) -> None:
+        line = tax_line("001", "1000", "FREE", "12.5%", net_quantity="1", net_unit="NO")
+        line.hts = "9401.61.4011"
+        line.chapter_99_codes = "9903.05.31"
+        document = tax_document()
+
+        modified_fields = recalculate(document, [line], include_hmf=False)
+
+        self.assertEqual(line.chapter_99_codes, "9903.05.31; 9903.76.02")
+        self.assertEqual(line.chapter_99_rates, "12.5%; 25%")
+        self.assertEqual(line.hts_additional_codes, "9903.76.02")
+        self.assertEqual(line.calculated_chapter_99_duty, "375.00")
+        self.assertEqual(document.calculated_duty_total, "375.00")
+        self.assertIn(line_field_key(line, "chapter_99_rates"), modified_fields)
+
+    def test_static_section_232_wood_rule_does_not_duplicate_undotted_codes(self) -> None:
+        line = tax_line("001", "1000", "FREE", "12.5%; 25%", net_quantity="1", net_unit="NO")
+        line.hts = "9401.61.4011"
+        line.chapter_99_codes = "99030531; 99037602"
+        document = tax_document()
+
+        modified_fields = recalculate(document, [line], include_hmf=False)
+
+        self.assertEqual(line.chapter_99_codes, "99030531; 99037602")
+        self.assertEqual(line.chapter_99_rates, "12.5%; 25%")
+        self.assertEqual(modified_fields, ())
+
 
 if __name__ == "__main__":
     unittest.main()
