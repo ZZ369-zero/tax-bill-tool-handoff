@@ -40,7 +40,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.16"
+APP_VERSION = "0.1.17"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 
 
@@ -57,6 +57,15 @@ def load_parser_module():
 parser = load_parser_module()
 app = FastAPI(title="7501 Tax Bill Tool", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.middleware("http")
+async def no_cache_static_assets(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @app.middleware("http")
@@ -1268,6 +1277,7 @@ def health() -> dict[str, str]:
         "section_232_wood_origin_routing": "9903.76.20-9903.76.24-for-UK-JP-EU-KR-TW",
         "china_section_301_static_rules": "9401-seating-9903.88.03-04-15-plus-9903.05.31",
         "china_origin_inference": "existing-9903.05.31-implies-CN-for-section-301-recalculation",
+        "static_asset_cache": "no-store-for-root-and-static-assets",
     }
 
 
