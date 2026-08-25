@@ -40,7 +40,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.19"
+APP_VERSION = "0.1.20"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 
 
@@ -1295,6 +1295,7 @@ def health() -> dict[str, str]:
         "china_origin_inference": "existing-9903.05.31-implies-CN-for-section-301-recalculation",
         "china_origin_line_text": "article-product-prdts-of-china-implies-CN-for-section-301-recalculation",
         "china_origin_line_text_override": "line-level-china-text-overrides-ambiguous-document-origin",
+        "standalone_hts_lookup": "sidebar-cn-default-official-chapter-99-display",
         "static_asset_cache": "no-store-for-root-and-static-assets",
     }
 

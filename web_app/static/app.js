@@ -10,6 +10,11 @@ const state = {
 };
 
 const els = {
+  htsSearchForm: document.querySelector("#hts-search-form"),
+  htsSearchCode: document.querySelector("#hts-search-code"),
+  htsSearchOrigin: document.querySelector("#hts-search-origin"),
+  htsSearchButton: document.querySelector("#hts-search-button"),
+  htsSearchResult: document.querySelector("#hts-search-result"),
   uploadForm: document.querySelector("#upload-form"),
   fileInput: document.querySelector("#pdf-file"),
   fileName: document.querySelector("#file-name"),
@@ -160,6 +165,57 @@ function formatAdditionalSuggestion(code, detailMap) {
   const codeText = label ? `${label}: ${code}` : code;
   const rateText = detail?.rate ? `${codeText} ${detail.rate}` : codeText;
   return detail?.condition ? `${rateText}（${detail.condition}）` : rateText;
+}
+
+function renderHtsSearchResult(result) {
+  const codes = Array.isArray(result.additional_hts_codes) ? result.additional_hts_codes : [];
+  const detailMap = new Map(
+    (Array.isArray(result.additional_hts_details) ? result.additional_hts_details : [])
+      .map((item) => [String(item.code || "").trim(), item])
+      .filter(([code]) => code),
+  );
+  const additionalRows = codes.length
+    ? codes.map((code) => {
+        const digits = chapter99Digits(code);
+        const className = digits === "99038804" ? "hit" : "condition";
+        return `<div class="${className}">${escapeHtml(formatAdditionalSuggestion(code, detailMap))}</div>`;
+      }).join("")
+    : '<div class="miss">未发现附加税项。</div>';
+  els.htsSearchResult.innerHTML = `
+    <div><strong>${escapeHtml(result.code || "-")}</strong></div>
+    <div>${escapeHtml(result.description || "未返回商品描述")}</div>
+    <div>普通税率：<strong>${escapeHtml(text(result.general_rate))}</strong></div>
+    <div>单位：${escapeHtml(text(result.required_units))}</div>
+    <div>附加税项：</div>
+    ${additionalRows}
+  `;
+}
+
+async function searchHts(event) {
+  event.preventDefault();
+  const code = String(els.htsSearchCode.value || "").trim();
+  if (!code) {
+    els.htsSearchResult.textContent = "请输入 HTS Code。";
+    return;
+  }
+  const params = new URLSearchParams({ code });
+  const origin = String(els.htsSearchOrigin.value || "").trim();
+  if (origin) {
+    params.set("origin", origin);
+  }
+  els.htsSearchButton.disabled = true;
+  els.htsSearchResult.textContent = `正在查询 ${code}...`;
+  try {
+    const response = await fetch(`/api/hts-lookup?${params.toString()}`);
+    if (!response.ok) {
+      throw new Error(await errorText(response));
+    }
+    renderHtsSearchResult(await response.json());
+  } catch (error) {
+    els.htsSearchResult.textContent = error.message || "HTS 查询失败。";
+  } finally {
+    els.htsSearchButton.disabled = false;
+  }
 }
 
 function applyPayload(payload) {
@@ -565,6 +621,7 @@ els.fileInput.addEventListener("change", () => {
   els.fileName.textContent = file ? file.name : "选择 PDF";
 });
 
+els.htsSearchForm.addEventListener("submit", searchHts);
 els.uploadForm.addEventListener("submit", parseUpload);
 els.excelPdfInput.addEventListener("change", () => {
   const file = els.excelPdfInput.files[0];
