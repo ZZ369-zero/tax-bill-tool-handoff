@@ -10,11 +10,6 @@ const state = {
 };
 
 const els = {
-  htsSearchForm: document.querySelector("#hts-search-form"),
-  htsSearchCode: document.querySelector("#hts-search-code"),
-  htsSearchOrigin: document.querySelector("#hts-search-origin"),
-  htsSearchButton: document.querySelector("#hts-search-button"),
-  htsSearchResult: document.querySelector("#hts-search-result"),
   uploadForm: document.querySelector("#upload-form"),
   fileInput: document.querySelector("#pdf-file"),
   fileName: document.querySelector("#file-name"),
@@ -93,131 +88,6 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-function chapter99Digits(code) {
-  return String(code || "").replace(/\D/g, "");
-}
-
-function lineImpliesChinaOrigin(line) {
-  const existingChapter99Digits = String(line?.chapter_99_codes || "")
-    .split(";")
-    .map(chapter99Digits)
-    .filter(Boolean);
-  if (existingChapter99Digits.includes("99030531")) {
-    return true;
-  }
-  const description = String(line?.description || "").replace(/\s+/g, " ").toUpperCase();
-  if (!description) {
-    return false;
-  }
-  const phrases = [
-    "ARTICLE OF CHINA",
-    "ARTICLES OF CHINA",
-    "PRODUCT OF CHINA",
-    "PRODUCTS OF CHINA",
-    "PRDT OF CHINA",
-    "PRDTS OF CHINA",
-  ];
-  return phrases.some((phrase) => description.includes(phrase))
-    || (description.includes("CHINA") && (description.includes("US NTE") || description.includes("NOTE 52")));
-}
-
-function originForLookup(line) {
-  if (lineImpliesChinaOrigin(line)) {
-    return "CN";
-  }
-  const raw = String(state.document?.country_of_origin || state.document?.exporting_country || "").trim();
-  if (!raw || raw === "-") {
-    return "";
-  }
-  if (raw.includes("中国") || raw.includes("中國")) {
-    return "CN";
-  }
-  const cleaned = raw.toUpperCase().replace(/[^A-Z]/g, "");
-  const aliases = new Map([
-    ["CN", "CN"],
-    ["CHINA", "CN"],
-    ["PRC", "CN"],
-    ["PEOPLESREPUBLICOFCHINA", "CN"],
-  ]);
-  if (aliases.has(cleaned)) {
-    return aliases.get(cleaned);
-  }
-  return cleaned.length === 2 ? cleaned : "";
-}
-
-function additionalDetailMap(line) {
-  return new Map(
-    (Array.isArray(line?.hts_additional_details) ? line.hts_additional_details : [])
-      .map((item) => [String(item.code || "").trim(), item])
-      .filter(([code]) => code),
-  );
-}
-
-function formatAdditionalSuggestion(code, detailMap) {
-  const detail = detailMap.get(code);
-  const digits = chapter99Digits(code);
-  const labels = new Map([
-    ["99038804", "301-对中加征"],
-    ["99030531", "新301-强迫劳动"],
-    ["99037602", "232-木制品"],
-  ]);
-  const label = labels.get(digits);
-  const codeText = label ? `${label}: ${code}` : code;
-  const rateText = detail?.rate ? `${codeText} ${detail.rate}` : codeText;
-  return detail?.condition ? `${rateText}（${detail.condition}）` : rateText;
-}
-
-function renderHtsSearchResult(result) {
-  const codes = Array.isArray(result.additional_hts_codes) ? result.additional_hts_codes : [];
-  const detailMap = new Map(
-    (Array.isArray(result.additional_hts_details) ? result.additional_hts_details : [])
-      .map((item) => [String(item.code || "").trim(), item])
-      .filter(([code]) => code),
-  );
-  const additionalRows = codes.length
-    ? codes.map((code) => {
-        const digits = chapter99Digits(code);
-        const className = digits === "99038804" ? "hit" : "condition";
-        return `<div class="${className}">${escapeHtml(formatAdditionalSuggestion(code, detailMap))}</div>`;
-      }).join("")
-    : '<div class="miss">未发现附加税项。</div>';
-  els.htsSearchResult.innerHTML = `
-    <div><strong>${escapeHtml(result.code || "-")}</strong></div>
-    <div>${escapeHtml(result.description || "未返回商品描述")}</div>
-    <div>普通税率：<strong>${escapeHtml(text(result.general_rate))}</strong></div>
-    <div>单位：${escapeHtml(text(result.required_units))}</div>
-    <div>附加税项：</div>
-    ${additionalRows}
-  `;
-}
-
-async function searchHts(event) {
-  event.preventDefault();
-  const code = String(els.htsSearchCode.value || "").trim();
-  if (!code) {
-    els.htsSearchResult.textContent = "请输入 HTS Code。";
-    return;
-  }
-  const params = new URLSearchParams({ code });
-  const origin = String(els.htsSearchOrigin.value || "").trim();
-  if (origin) {
-    params.set("origin", origin);
-  }
-  els.htsSearchButton.disabled = true;
-  els.htsSearchResult.textContent = `正在查询 ${code}...`;
-  try {
-    const response = await fetch(`/api/hts-lookup?${params.toString()}`);
-    if (!response.ok) {
-      throw new Error(await errorText(response));
-    }
-    renderHtsSearchResult(await response.json());
-  } catch (error) {
-    els.htsSearchResult.textContent = error.message || "HTS 查询失败。";
-  } finally {
-    els.htsSearchButton.disabled = false;
-  }
-}
-
 function applyPayload(payload) {
   state.document = payload.document;
   state.lines = payload.lines || [];
@@ -278,29 +148,13 @@ function collectWarnings() {
     if (line.parse_notes) {
       warnings.push(`Line ${line.line_no}: ${line.parse_notes}`);
     }
-    if (Array.isArray(line.section_232_wood_notes)) {
-      for (const note of line.section_232_wood_notes) {
-        if (note?.description) {
-          warnings.push(`Line ${line.line_no}: ${note.description}`);
-        }
-      }
-    }
     if (line.hts_description) {
       const suggested = String(line.hts_additional_codes || "").split(";").map((item) => item.trim()).filter(Boolean);
-      const detailMap = additionalDetailMap(line);
-      const isPolicyWideChapter99Code = (code) => {
-        const digits = chapter99Digits(code);
-        return digits === "99030301" || digits.startsWith("990305") || digits.startsWith("990306");
-      };
       const currentCodes = String(line.chapter_99_codes || "").split(";").map((item) => item.trim()).filter(Boolean);
-      const currentCodeDigits = new Set(currentCodes.map(chapter99Digits));
-      const suggestedCodeDigits = new Set(suggested.map(chapter99Digits));
-      const missing = suggested.filter((code) => !currentCodeDigits.has(chapter99Digits(code)));
-      const possiblyStale = currentCodes.filter(
-        (code) => !isPolicyWideChapter99Code(code) && !suggestedCodeDigits.has(chapter99Digits(code)),
-      );
+      const missing = suggested.filter((code) => !currentCodes.includes(code));
+      const possiblyStale = currentCodes.filter((code) => code !== "9903.03.01" && !suggested.includes(code));
       if (missing.length) {
-        warnings.push(`Line ${line.line_no}: HTS 提示附加税项 ${missing.map((code) => formatAdditionalSuggestion(code, detailMap)).join(", ")}，请人工确认`);
+        warnings.push(`Line ${line.line_no}: HTS 提示附加税项 ${missing.join(", ")}，请人工确认`);
       }
       if (possiblyStale.length) {
         warnings.push(`Line ${line.line_no}: 原附加税项 ${possiblyStale.join(", ")} 可能不再匹配新 HTS`);
@@ -324,18 +178,9 @@ function renderLines() {
       const htsDescription = line.hts_description
         ? `<small class="official-description" title="${escapeHtml(line.hts_description)}">USITC: ${escapeHtml(line.hts_description)}</small>`
         : "";
-      const currentCodes = String(line.chapter_99_codes || "").split(";").map((item) => item.trim()).filter(Boolean);
-      const currentCodeDigits = new Set(currentCodes.map(chapter99Digits));
-      const suggestedCodes = String(line.hts_additional_codes || "").split(";").map((item) => item.trim()).filter(Boolean);
-      const missingSuggestedCodes = suggestedCodes.filter((code) => !currentCodeDigits.has(chapter99Digits(code)));
-      const detailMap = additionalDetailMap(line);
-      const currentAdditionalRates = line.chapter_99_codes
+      const additionalRates = line.chapter_99_codes
         ? `<small class="additional-rates">${escapeHtml(line.chapter_99_codes)} · ${escapeHtml(text(line.chapter_99_rates))}</small>`
         : "";
-      const suggestedAdditionalRates = missingSuggestedCodes.length
-        ? `<small class="additional-rates">提示: ${escapeHtml(missingSuggestedCodes.map((code) => formatAdditionalSuggestion(code, detailMap)).join("; "))}</small>`
-        : "";
-      const additionalRates = `${currentAdditionalRates}${suggestedAdditionalRates}`;
       return `
         <tr>
           <td>${escapeHtml(text(line.line_no))}</td>
@@ -362,12 +207,7 @@ async function lookupHts(index) {
   }
   setStatus(`正在查询 HTS ${code}`, collectWarnings());
   try {
-    const origin = originForLookup(line);
-    const params = new URLSearchParams({ code });
-    if (origin && origin !== "-") {
-      params.set("origin", origin);
-    }
-    const response = await fetch(`/api/hts-lookup?${params.toString()}`);
+    const response = await fetch(`/api/hts-lookup?code=${encodeURIComponent(code)}`);
     if (!response.ok) {
       throw new Error(await errorText(response));
     }
@@ -387,8 +227,6 @@ async function lookupHts(index) {
       state.modifiedFields.add(`line:${line.page}:${line.line_no}:rate`);
     }
     line.hts_additional_codes = (result.additional_hts_codes || []).join("; ") || null;
-    line.hts_additional_details = result.additional_hts_details || [];
-    line.section_232_wood_notes = result.section_232_wood_notes || [];
     renderLines();
     await recalculate();
   } catch (error) {
@@ -621,7 +459,6 @@ els.fileInput.addEventListener("change", () => {
   els.fileName.textContent = file ? file.name : "选择 PDF";
 });
 
-els.htsSearchForm.addEventListener("submit", searchHts);
 els.uploadForm.addEventListener("submit", parseUpload);
 els.excelPdfInput.addEventListener("change", () => {
   const file = els.excelPdfInput.files[0];

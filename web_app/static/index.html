@@ -17,31 +17,6 @@
           </div>
         </div>
 
-        <form id="hts-search-form" class="lookup-panel">
-          <div class="panel-label">
-            <strong>HTS 官方税项查询</strong>
-            <span>用于校验 301/232 等附加税项</span>
-          </div>
-          <label class="lookup-field" for="hts-search-code">
-            <span>HTS Code</span>
-            <input id="hts-search-code" type="text" inputmode="numeric" placeholder="例如 9401696011" />
-          </label>
-          <label class="select-row" for="hts-search-origin">
-            <span>原产国</span>
-            <select id="hts-search-origin">
-              <option value="CN" selected>中国来源 CN（推荐）</option>
-              <option value="">未确定：仅显示条件税项</option>
-              <option value="JP">日本 JP</option>
-              <option value="TW">台湾 TW</option>
-              <option value="KR">韩国 KR</option>
-              <option value="GB">英国 GB</option>
-              <option value="EU">欧盟 EU</option>
-            </select>
-          </label>
-          <button id="hts-search-button" type="submit">查询税项</button>
-          <div id="hts-search-result" class="hts-result">输入 HTS 后查询。</div>
-        </form>
-
         <form id="upload-form" class="upload-panel">
           <label class="file-drop" for="pdf-file">
             <input id="pdf-file" name="file" type="file" accept="application/pdf,.pdf" />

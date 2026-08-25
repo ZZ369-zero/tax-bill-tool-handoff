@@ -102,7 +102,6 @@ button:disabled {
 }
 
 .upload-panel,
-.lookup-panel,
 .control-group,
 .status-panel {
   border: 1px solid rgba(255, 255, 255, 0.12);
@@ -112,7 +111,6 @@ button:disabled {
 }
 
 .upload-panel,
-.lookup-panel,
 .control-group {
   display: grid;
   gap: 10px;
@@ -154,51 +152,6 @@ button:disabled {
   background: #111827;
   color: #dce7f4;
   padding: 0 10px;
-}
-
-.lookup-field {
-  display: grid;
-  gap: 5px;
-  color: #dce7f4;
-  font-size: 12px;
-}
-
-.lookup-field input {
-  width: 100%;
-  min-height: 36px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 8px;
-  background: #0b1220;
-  color: #f8fafc;
-  padding: 0 10px;
-}
-
-.hts-result {
-  border: 1px solid rgba(255, 255, 255, 0.13);
-  border-radius: 8px;
-  background: rgba(15, 23, 42, 0.78);
-  color: #dbeafe;
-  font-size: 12px;
-  line-height: 1.5;
-  padding: 10px;
-  overflow-wrap: anywhere;
-}
-
-.hts-result strong {
-  color: #ffffff;
-}
-
-.hts-result .hit {
-  color: #86efac;
-  font-weight: 700;
-}
-
-.hts-result .condition {
-  color: #fde68a;
-}
-
-.hts-result .miss {
-  color: #cbd5e1;
 }
 
 .mode-group {
