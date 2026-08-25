@@ -342,6 +342,10 @@ def normalized_units(raw_units: Any) -> list[str]:
     return units
 
 
+def is_explicit_origin_key(origin_key: str | None) -> bool:
+    return origin_key == "EU" or bool(origin_key and len(origin_key) == 2)
+
+
 def static_additional_hts_details(
     digits: str,
     origin: Any = None,
@@ -354,7 +358,7 @@ def static_additional_hts_details(
         origin_keys = rule.get("origin_keys")
         conditional_origin_keys: tuple[str, ...] = ()
         if origin_keys and origin_key not in origin_keys:
-            if include_origin_conditions and origin_key is None and not rule.get("applies_to_all"):
+            if include_origin_conditions and not is_explicit_origin_key(origin_key) and not rule.get("applies_to_all"):
                 conditional_origin_keys = tuple(str(key) for key in origin_keys)
             else:
                 continue

@@ -40,7 +40,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.18"
+APP_VERSION = "0.1.19"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 
 
@@ -205,7 +205,7 @@ def sync_static_chapter_99(lines: list[Any], *, document: Any = None) -> tuple[s
         except ValueError:
             continue
 
-        line_origin = origin or ("CN" if line_implies_china_origin(line) else None)
+        line_origin = "CN" if line_implies_china_origin(line) else origin
         details = static_additional_hts_details(digits, line_origin)
         if not details:
             continue
@@ -1294,6 +1294,7 @@ def health() -> dict[str, str]:
         "china_section_301_static_rules": "9401-seating-9903.88.03-04-15-plus-9903.05.31",
         "china_origin_inference": "existing-9903.05.31-implies-CN-for-section-301-recalculation",
         "china_origin_line_text": "article-product-prdts-of-china-implies-CN-for-section-301-recalculation",
+        "china_origin_line_text_override": "line-level-china-text-overrides-ambiguous-document-origin",
         "static_asset_cache": "no-store-for-root-and-static-assets",
     }
 

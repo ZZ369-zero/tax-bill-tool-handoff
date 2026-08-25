@@ -310,6 +310,18 @@ class CbpCalculationTests(unittest.TestCase):
         self.assertEqual(line.calculated_chapter_99_duty, "375.00")
         self.assertIn(line_field_key(line, "chapter_99_codes"), modified_fields)
 
+    def test_article_of_china_overrides_ambiguous_document_origin(self) -> None:
+        line = tax_line("001", "1000", "FREE", "", net_quantity="1", net_unit="NO")
+        line.hts = "9401.69.6011"
+        line.description = "PRDTS OF CHINA, NOTE 52 CHAIRS"
+        document = tax_document()
+        document.country_of_origin = "C"
+
+        recalculate(document, [line], include_hmf=False)
+
+        self.assertEqual(line.chapter_99_codes, "9903.88.04; 9903.05.31")
+        self.assertEqual(line.chapter_99_rates, "25%; 12.5%")
+
 
 if __name__ == "__main__":
     unittest.main()

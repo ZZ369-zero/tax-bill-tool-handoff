@@ -88,6 +88,80 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function chapter99Digits(code) {
+  return String(code || "").replace(/\D/g, "");
+}
+
+function lineImpliesChinaOrigin(line) {
+  const existingChapter99Digits = String(line?.chapter_99_codes || "")
+    .split(";")
+    .map(chapter99Digits)
+    .filter(Boolean);
+  if (existingChapter99Digits.includes("99030531")) {
+    return true;
+  }
+  const description = String(line?.description || "").replace(/\s+/g, " ").toUpperCase();
+  if (!description) {
+    return false;
+  }
+  const phrases = [
+    "ARTICLE OF CHINA",
+    "ARTICLES OF CHINA",
+    "PRODUCT OF CHINA",
+    "PRODUCTS OF CHINA",
+    "PRDT OF CHINA",
+    "PRDTS OF CHINA",
+  ];
+  return phrases.some((phrase) => description.includes(phrase))
+    || (description.includes("CHINA") && (description.includes("US NTE") || description.includes("NOTE 52")));
+}
+
+function originForLookup(line) {
+  if (lineImpliesChinaOrigin(line)) {
+    return "CN";
+  }
+  const raw = String(state.document?.country_of_origin || state.document?.exporting_country || "").trim();
+  if (!raw || raw === "-") {
+    return "";
+  }
+  if (raw.includes("中国") || raw.includes("中國")) {
+    return "CN";
+  }
+  const cleaned = raw.toUpperCase().replace(/[^A-Z]/g, "");
+  const aliases = new Map([
+    ["CN", "CN"],
+    ["CHINA", "CN"],
+    ["PRC", "CN"],
+    ["PEOPLESREPUBLICOFCHINA", "CN"],
+  ]);
+  if (aliases.has(cleaned)) {
+    return aliases.get(cleaned);
+  }
+  return cleaned.length === 2 ? cleaned : "";
+}
+
+function additionalDetailMap(line) {
+  return new Map(
+    (Array.isArray(line?.hts_additional_details) ? line.hts_additional_details : [])
+      .map((item) => [String(item.code || "").trim(), item])
+      .filter(([code]) => code),
+  );
+}
+
+function formatAdditionalSuggestion(code, detailMap) {
+  const detail = detailMap.get(code);
+  const digits = chapter99Digits(code);
+  const labels = new Map([
+    ["99038804", "301-对中加征"],
+    ["99030531", "新301-强迫劳动"],
+    ["99037602", "232-木制品"],
+  ]);
+  const label = labels.get(digits);
+  const codeText = label ? `${label}: ${code}` : code;
+  const rateText = detail?.rate ? `${codeText} ${detail.rate}` : codeText;
+  return detail?.condition ? `${rateText}（${detail.condition}）` : rateText;
+}
+
 function applyPayload(payload) {
   state.document = payload.document;
   state.lines = payload.lines || [];
@@ -157,17 +231,7 @@ function collectWarnings() {
     }
     if (line.hts_description) {
       const suggested = String(line.hts_additional_codes || "").split(";").map((item) => item.trim()).filter(Boolean);
-      const detailMap = new Map(
-        (Array.isArray(line.hts_additional_details) ? line.hts_additional_details : [])
-          .map((item) => [String(item.code || "").trim(), item])
-          .filter(([code]) => code),
-      );
-      const formatSuggestion = (code) => {
-        const detail = detailMap.get(code);
-        const rateText = detail?.rate ? `${code} ${detail.rate}` : code;
-        return detail?.condition ? `${rateText}（${detail.condition}）` : rateText;
-      };
-      const chapter99Digits = (code) => String(code || "").replace(/\D/g, "");
+      const detailMap = additionalDetailMap(line);
       const isPolicyWideChapter99Code = (code) => {
         const digits = chapter99Digits(code);
         return digits === "99030301" || digits.startsWith("990305") || digits.startsWith("990306");
@@ -180,7 +244,7 @@ function collectWarnings() {
         (code) => !isPolicyWideChapter99Code(code) && !suggestedCodeDigits.has(chapter99Digits(code)),
       );
       if (missing.length) {
-        warnings.push(`Line ${line.line_no}: HTS 提示附加税项 ${missing.map(formatSuggestion).join(", ")}，请人工确认`);
+        warnings.push(`Line ${line.line_no}: HTS 提示附加税项 ${missing.map((code) => formatAdditionalSuggestion(code, detailMap)).join(", ")}，请人工确认`);
       }
       if (possiblyStale.length) {
         warnings.push(`Line ${line.line_no}: 原附加税项 ${possiblyStale.join(", ")} 可能不再匹配新 HTS`);
@@ -204,9 +268,18 @@ function renderLines() {
       const htsDescription = line.hts_description
         ? `<small class="official-description" title="${escapeHtml(line.hts_description)}">USITC: ${escapeHtml(line.hts_description)}</small>`
         : "";
-      const additionalRates = line.chapter_99_codes
+      const currentCodes = String(line.chapter_99_codes || "").split(";").map((item) => item.trim()).filter(Boolean);
+      const currentCodeDigits = new Set(currentCodes.map(chapter99Digits));
+      const suggestedCodes = String(line.hts_additional_codes || "").split(";").map((item) => item.trim()).filter(Boolean);
+      const missingSuggestedCodes = suggestedCodes.filter((code) => !currentCodeDigits.has(chapter99Digits(code)));
+      const detailMap = additionalDetailMap(line);
+      const currentAdditionalRates = line.chapter_99_codes
         ? `<small class="additional-rates">${escapeHtml(line.chapter_99_codes)} · ${escapeHtml(text(line.chapter_99_rates))}</small>`
         : "";
+      const suggestedAdditionalRates = missingSuggestedCodes.length
+        ? `<small class="additional-rates">提示: ${escapeHtml(missingSuggestedCodes.map((code) => formatAdditionalSuggestion(code, detailMap)).join("; "))}</small>`
+        : "";
+      const additionalRates = `${currentAdditionalRates}${suggestedAdditionalRates}`;
       return `
         <tr>
           <td>${escapeHtml(text(line.line_no))}</td>
@@ -233,14 +306,7 @@ async function lookupHts(index) {
   }
   setStatus(`正在查询 HTS ${code}`, collectWarnings());
   try {
-    let origin = state.document?.country_of_origin || state.document?.exporting_country || "";
-    const existingChapter99Digits = String(line.chapter_99_codes || "")
-      .split(";")
-      .map((item) => item.replace(/\D/g, ""))
-      .filter(Boolean);
-    if (!origin && existingChapter99Digits.includes("99030531")) {
-      origin = "CN";
-    }
+    const origin = originForLookup(line);
     const params = new URLSearchParams({ code });
     if (origin && origin !== "-") {
       params.set("origin", origin);

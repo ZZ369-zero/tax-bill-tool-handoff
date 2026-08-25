@@ -225,6 +225,27 @@ class HtsLookupTests(unittest.TestCase):
         self.assertEqual(result["additional_hts_details"][0]["rate"], "25%")
         self.assertEqual(result["additional_hts_details"][0]["origin_condition"], "CN")
 
+    def test_china_section_301_tariffs_display_condition_for_ambiguous_origin(self) -> None:
+        records = [
+            {
+                "htsno": "9401.69.60",
+                "description": "Other",
+                "general": "Free",
+            },
+            {
+                "htsno": "9401.69.60.11",
+                "description": "Other household",
+                "general": "",
+                "units": ["No."],
+                "footnotes": [],
+            },
+        ]
+
+        result = build_lookup_result("9401696011", records, origin="C")
+
+        self.assertEqual(result["additional_hts_codes"], ["9903.88.04"])
+        self.assertEqual(result["additional_hts_details"][0]["condition"], "Applies only when the country of origin is China")
+
     def test_china_section_301_seating_page_mappings_cover_current_release(self) -> None:
         expected = {
             "9903.88.03": ("94012000", "94016160", "94016980", "94019990"),
