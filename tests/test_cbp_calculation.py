@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from pathlib import Path
 import unittest
 
 from web_app.app import (
@@ -51,6 +52,74 @@ def tax_document() -> object:
 
 
 class CbpCalculationTests(unittest.TestCase):
+    def test_repairs_readable_fragments_with_content_stream_coordinates(self) -> None:
+        readable = [
+            parser.TextFragment(page=1, x=0, y=0, size=10, font="/Courier", text="NXG   0002503-4"),
+            parser.TextFragment(page=1, x=0, y=0, size=10, font="/Courier", text="12.50%"),
+        ]
+        coordinates = [
+            parser.TextFragment(page=1, x=24, y=707, size=10, font="/F5", text="1;*   0002503-4"),
+            parser.TextFragment(page=1, x=429, y=349, size=10, font="/F5", text="\x14\x15\x11\x18\x13\x08"),
+        ]
+
+        repaired = parser.repair_fragment_coordinates(readable, coordinates)
+
+        self.assertEqual(repaired[0].text, "NXG   0002503-4")
+        self.assertEqual((repaired[0].x, repaired[0].y), (24, 707))
+        self.assertEqual((repaired[1].x, repaired[1].y), (429, 349))
+
+    def test_parses_new_template_line_without_currency_symbols(self) -> None:
+        rows = [
+            [
+                parser.TextFragment(page=1, x=24, y=361.34, size=10, font="/Courier", text="001"),
+                parser.TextFragment(page=1, x=61, y=361.34, size=10, font="/Courier", text=" PRDTS OF CHINA, NOTE 52"),
+                parser.TextFragment(page=1, x=324, y=361.34, size=10, font="/Courier", text=" NOT-RELATED"),
+            ],
+            [
+                parser.TextFragment(page=1, x=61, y=349.34, size=10, font="/Courier", text="9903.05.31"),
+                parser.TextFragment(page=1, x=339, y=349.34, size=10, font="/Courier", text="      0"),
+                parser.TextFragment(page=1, x=429, y=349.34, size=10, font="/Courier", text=" 12.50%"),
+                parser.TextFragment(page=1, x=561, y=349.34, size=10, font="/Courier", text=" 46.88"),
+            ],
+            [
+                parser.TextFragment(page=1, x=61, y=337.34, size=10, font="/Courier", text="PLAS,STATUETTES/OTHER ORNAMENT"),
+            ],
+            [
+                parser.TextFragment(page=1, x=61, y=325.34, size=10, font="/Courier", text="3926.40.0090"),
+                parser.TextFragment(page=1, x=207, y=325.34, size=10, font="/Courier", text=" 300"),
+                parser.TextFragment(page=1, x=209.5, y=325.34, size=10, font="/Courier", text="          950 NO"),
+                parser.TextFragment(page=1, x=339, y=325.34, size=10, font="/Courier", text="    375"),
+                parser.TextFragment(page=1, x=432, y=325.34, size=10, font="/Courier", text=" 5.30%"),
+                parser.TextFragment(page=1, x=561, y=325.34, size=10, font="/Courier", text=" 19.88"),
+            ],
+            [
+                parser.TextFragment(page=1, x=339, y=313.34, size=10, font="/Courier", text="   C 0"),
+            ],
+            [
+                parser.TextFragment(page=1, x=61, y=301.34, size=10, font="/Courier", text="Merchandise Processing Fee"),
+                parser.TextFragment(page=1, x=429, y=301.34, size=10, font="/Courier", text=" 0.3464%"),
+                parser.TextFragment(page=1, x=567, y=301.34, size=10, font="/Courier", text=" 1.30"),
+            ],
+        ]
+        start = rows[0][0]
+
+        line = parser.parse_line_rows(Path("new-template.pdf"), "original", "case", "NXG 0002503-4", start, rows)
+
+        self.assertEqual(line.line_no, "001")
+        self.assertEqual(line.hts, "3926.40.0090")
+        self.assertEqual(line.gross_weight, "300")
+        self.assertIsNone(line.gross_unit)
+        self.assertEqual(line.net_quantity, "950")
+        self.assertEqual(line.net_unit, "NO")
+        self.assertEqual(line.entered_value, "375")
+        self.assertEqual(line.rate, "5.30%")
+        self.assertEqual(line.duty_amount, "19.88")
+        self.assertEqual(line.chapter_99_codes, "9903.05.31")
+        self.assertEqual(line.chapter_99_rates, "12.50%")
+        self.assertEqual(line.chapter_99_amounts, "46.88")
+        self.assertEqual(line.mpf_amount, "1.30")
+        self.assertEqual(line.relationship, "N")
+
     def test_parses_reporting_unit_with_digit_from_hts_row(self) -> None:
         text = "7007.19.0000 157 KG 39.44 M2 $3,200 5% $160.00"
         row = [

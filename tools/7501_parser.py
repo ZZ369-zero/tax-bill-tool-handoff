@@ -263,9 +263,72 @@ def extract_visitor_fragments(reader: PdfReader) -> list[TextFragment]:
 
 def extract_fragments(reader: PdfReader) -> list[TextFragment]:
     content_fragments = extract_content_stream_fragments(reader)
-    if content_fragments:
+    visitor_fragments = extract_visitor_fragments(reader)
+    if not content_fragments:
+        return visitor_fragments
+    if not visitor_fragments:
         return content_fragments
-    return extract_visitor_fragments(reader)
+
+    readable_fragments = repair_fragment_coordinates(visitor_fragments, content_fragments)
+    if fragment_text_quality_score(readable_fragments) > fragment_text_quality_score(content_fragments):
+        return readable_fragments
+    return content_fragments
+
+
+def is_zero_position(fragment: TextFragment) -> bool:
+    return abs(fragment.x) < 0.01 and abs(fragment.y) < 0.01
+
+
+def repair_fragment_coordinates(
+    readable_fragments: list[TextFragment],
+    coordinate_fragments: list[TextFragment],
+) -> list[TextFragment]:
+    if len(readable_fragments) != len(coordinate_fragments):
+        return readable_fragments
+
+    repaired: list[TextFragment] = []
+    for readable, coordinate in zip(readable_fragments, coordinate_fragments):
+        if (
+            readable.page == coordinate.page
+            and is_zero_position(readable)
+            and not is_zero_position(coordinate)
+        ):
+            repaired.append(
+                TextFragment(
+                    page=readable.page,
+                    x=coordinate.x,
+                    y=coordinate.y,
+                    size=readable.size or coordinate.size,
+                    font=readable.font or coordinate.font,
+                    text=readable.text,
+                )
+            )
+        else:
+            repaired.append(readable)
+    return repaired
+
+
+def fragment_text_quality_score(fragments: list[TextFragment]) -> int:
+    text = "\n".join(fragment.text for fragment in fragments)
+    markers = (
+        "ENTRY SUMMARY",
+        "Filer Code",
+        "Entry Number",
+        "B/L",
+        "AWB",
+        "HTSUS",
+        "Description of Merchandise",
+        "Merchandise Processing Fee",
+        "Total Entered Value",
+    )
+    marker_score = sum(50 for marker in markers if marker.lower() in text.lower())
+    word_score = min(len(re.findall(r"\b[A-Za-z]{3,}\b", text)), 200)
+    control_penalty = sum(
+        5
+        for char in text
+        if ord(char) < 32 and char not in ("\n", "\r", "\t")
+    )
+    return marker_score + word_score - control_penalty
 
 
 def extract_text(reader: PdfReader) -> str:
@@ -345,6 +408,14 @@ def parse_money(value: str | None) -> str | None:
     compact = re.sub(r"\s+", "", value).replace("$", "")
     match = re.search(r"([0-9,]+(?:\.\d{1,2})?)", compact)
     return match.group(1) if match else None
+
+
+def parse_last_money(value: str | None) -> str | None:
+    if not value:
+        return None
+    compact = re.sub(r"\s+", "", value).replace("$", "")
+    matches = re.findall(r"([0-9,]+(?:\.\d{1,2})?)", compact)
+    return matches[-1] if matches else None
 
 
 def parse_entered_value_text(value: str | None) -> str | None:
@@ -496,8 +567,13 @@ def decimal_difference(actual: str | None, calculated: str | None) -> str | None
     return format_money(actual_decimal - calculated_decimal)
 
 
+def normalized_label(value: str) -> str:
+    return re.sub(r"\s+", "", value).upper()
+
+
 def field_below(fragments: list[TextFragment], label: str, x_min: float, x_max: float) -> str | None:
-    labels = [f for f in fragments if label in f.text]
+    normalized_target = normalized_label(label)
+    labels = [f for f in fragments if normalized_target in normalized_label(f.text)]
     for label_fragment in labels:
         candidates = [
             f
@@ -505,7 +581,7 @@ def field_below(fragments: list[TextFragment], label: str, x_min: float, x_max: 
             if f.page == label_fragment.page
             and x_min <= f.x <= x_max
             and label_fragment.y - 18 <= f.y <= label_fragment.y - 6
-            and label not in f.text
+            and normalized_target not in normalized_label(f.text)
         ]
         if candidates:
             return normalize_spaces(" ".join(f.text.strip() for f in sorted(candidates, key=lambda f: f.x)))
@@ -558,7 +634,20 @@ def parse_invoice_totals(text: str) -> tuple[str | None, str | None, str | None]
         re.S,
     )
     if not match:
-        return None, None, None
+        invoice_match = re.search(r"Invoice Number\s*-\s*([^\n]+)", text, re.I)
+        invoice_value_match = re.search(r"\bI\.V\.\s+([0-9,]+\.\d{2})\s+USD", text, re.I)
+        entered_value_match = re.search(
+            r"\bE\.V\.\s+([0-9,]+\.\d{2})(?:\s+\S+)?(?:\s+([0-9,]+))?",
+            text,
+            re.I,
+        )
+        if not invoice_match and not invoice_value_match and not entered_value_match:
+            return None, None, None
+        return (
+            normalize_spaces(invoice_match.group(1)) if invoice_match else None,
+            invoice_value_match.group(1) if invoice_value_match else None,
+            entered_value_match.group(1) if entered_value_match else None,
+        )
     return normalize_spaces(match.group(1)), match.group(2), match.group(3)
 
 
@@ -584,7 +673,8 @@ def fee_summary_section(text: str) -> str:
     start = text.find("Other Fee Summary")
     if start < 0:
         return ""
-    end = text.find("40. Declaration", start)
+    end_match = re.search(r"40\.\s*Declaration", text[start:], re.I)
+    end = start + end_match.start() if end_match else -1
     if end < 0:
         end = start + 500
     return text[start:end]
@@ -597,8 +687,28 @@ def parse_fee_summary_amount(text: str, fee_code: str, label: str) -> str | None
     pattern = re.compile(rf"{re.escape(fee_code)}\s*-\s*{re.escape(label)}[^\n]*")
     match = pattern.search(section)
     if not match:
+        dotted_label = r"\.?".join(re.escape(char) for char in label)
+        pattern = re.compile(rf"{re.escape(fee_code)}\s+{dotted_label}\.?\s+[^\n]*", re.I)
+        match = pattern.search(section)
+    if not match:
         return None
-    return money_after_dollar(match.group(0))
+    return money_after_dollar(match.group(0)) or parse_last_money(match.group(0))
+
+
+def parse_fee_summary_amount_from_fragments(
+    fragments: list[TextFragment],
+    fee_code: str,
+    label: str,
+) -> str | None:
+    dotted_label = r"\.?".join(re.escape(char) for char in label)
+    pattern = re.compile(rf"\b{re.escape(fee_code)}\b.*{dotted_label}\.?", re.I)
+    for fragment in fragments:
+        if fragment.page != 1 or not pattern.search(fragment.text):
+            continue
+        amount = parse_last_money(fragment.text)
+        if amount:
+            return amount
+    return None
 
 
 def parse_header_document(
@@ -616,8 +726,12 @@ def parse_header_document(
     text_total_entered_value = parse_total_entered_value_from_text(text)
     total_entered_value = prefer_larger_amount(coord_total_entered_value, text_total_entered_value)
     total_other_fees = parse_total_other_fees(fragments) or parse_total_other_fees_from_text(text)
-    mpf_total = parse_fee_summary_amount(text, "499", "MPF")
-    hmf_total = parse_fee_summary_amount(text, "501", "HMF")
+    mpf_total = parse_fee_summary_amount(text, "499", "MPF") or parse_fee_summary_amount_from_fragments(
+        fragments, "499", "MPF"
+    )
+    hmf_total = parse_fee_summary_amount(text, "501", "HMF") or parse_fee_summary_amount_from_fragments(
+        fragments, "501", "HMF"
+    )
 
     doc = TaxDocument(
         file_role=file_role,
@@ -627,9 +741,9 @@ def parse_header_document(
         has_text_layer=len(text.strip()) > 100,
         fonts=", ".join(fonts),
         page_size=", ".join(sorted(set(page_sizes))),
-        entry_number=field_below(fragments, "1. Filer Code/Entry Number", 20, 150),
-        entry_type=field_below(fragments, "2. Entry Type", 150, 225),
-        summary_date=field_below(fragments, "3. Summary Date", 225, 300),
+        entry_number=field_below(fragments, "1. Filer Code/Entry Number", 20, 145),
+        entry_type=field_below(fragments, "2. Entry Type", 140, 215),
+        summary_date=field_below(fragments, "3. Summary Date", 215, 295),
         port_code=field_below(fragments, "6. Port Code", 430, 490),
         entry_date=field_below(fragments, "7. Entry Date", 490, 570),
         mode_of_transport=field_below(fragments, "9. Mode of Transport", 185, 260),
@@ -736,6 +850,24 @@ def page_line_table_top(page: int) -> float:
     return 455 if page == 1 else 655
 
 
+def page_line_table_bottom(fragments: list[TextFragment], page: int) -> float:
+    if page != 1:
+        return 40.0
+    markers = [
+        fragment.y
+        for fragment in fragments
+        if fragment.page == page
+        and (
+            "Other Fee Summary" in fragment.text
+            or "CBP USE ONLY" in fragment.text
+            or re.search(r"\b40\.\s*Declaration", fragment.text, re.I)
+        )
+    ]
+    if markers:
+        return max(markers) + 1.0
+    return 280.0
+
+
 def parse_lines(
     path: Path,
     file_role: str,
@@ -744,20 +876,21 @@ def parse_lines(
     fragments: list[TextFragment],
 ) -> list[TaxLine]:
     lines: list[TaxLine] = []
+    page_bottoms = {page: page_line_table_bottom(fragments, page) for page in {f.page for f in fragments}}
     line_starts = [
         f
         for f in fragments
-        if 35 <= f.x <= 55
+        if 20 <= f.x <= 55
         and re.match(r"^\s*\d{3}(?:\s|$)", f.text.strip())
         and not f.text.strip().startswith("499")
         and f.y < page_line_table_top(f.page)
-        and f.y > (280 if f.page == 1 else 40)
+        and f.y > page_bottoms.get(f.page, 40.0)
     ]
     line_starts = sorted(line_starts, key=lambda f: (f.page, -f.y))
 
     for index, start in enumerate(line_starts):
         next_start = line_starts[index + 1] if index + 1 < len(line_starts) else None
-        y_low = 280.0 if start.page == 1 else 40.0
+        y_low = page_bottoms.get(start.page, 40.0)
         if next_start and next_start.page == start.page:
             y_low = next_start.y + 1.0
         rows = rows_for_line(fragments, start.page, start.y, y_low)
@@ -789,7 +922,11 @@ def rows_for_line(
         row_text_value = normalize_spaces(" ".join(f.text.strip() for f in row))
         if row_text_value.startswith("CBP Form"):
             continue
-        if "Totals for Invoice" in row_text_value:
+        if (
+            "Totals for Invoice" in row_text_value
+            or "Other Fee Summary" in row_text_value
+            or re.match(r"^\s*(?:I\.V\.|E\.V\.)(?:\s|$)", row_text_value, re.I)
+        ):
             break
         rows.append(row)
     return rows
@@ -826,7 +963,7 @@ def parse_line_rows(
         if "Merchandise Processing Fee" in text:
             rate_match = re.search(r"([0-9.]+%)", text)
             line.mpf_rate = rate_match.group(1) if rate_match else line.mpf_rate
-            line.mpf_amount = money_after_dollar(text, last=True)
+            line.mpf_amount = money_after_rate(text, rate_match) or money_after_dollar(text, last=True)
             if not line.mpf_amount:
                 notes.append("mpf row not parsed")
             continue
@@ -834,20 +971,17 @@ def parse_line_rows(
         if "Harbor Maintenance Fee" in text:
             rate_match = re.search(r"([0-9.]+%)", text)
             line.hmf_rate = rate_match.group(1) if rate_match else line.hmf_rate
-            line.hmf_amount = money_after_dollar(text, last=True)
+            line.hmf_amount = money_after_rate(text, rate_match) or money_after_dollar(text, last=True)
             if not line.hmf_amount:
                 notes.append("hmf row not parsed")
             continue
 
         hts_match = re.search(r"\b(\d{4}\.\d{2}\.\d{4})\b", text)
-        chapter_match = re.search(
-            r"\b(99\d{2}\.\d{2}\.\d{2})\b(?:\s+([A-Z0-9.]+%|FREE))?(?:\s+\$?\s*([0-9,]+(?:\.\d{2})?))?",
-            text,
-        )
+        chapter_match = parse_chapter_99_row(text)
         if chapter_match:
-            chapter_codes.append(chapter_match.group(1))
-            chapter_rates.append(chapter_match.group(2) or "")
-            chapter_amounts.append(chapter_match.group(3) or "")
+            chapter_codes.append(chapter_match["code"])
+            chapter_rates.append(chapter_match["rate"] or "")
+            chapter_amounts.append(chapter_match["amount"] or "")
             continue
 
         if hts_match:
@@ -869,6 +1003,9 @@ def parse_line_rows(
         if text == "N" or text.endswith(" N"):
             line.relationship = "N"
             continue
+        if "NOT-RELATED" in text:
+            line.relationship = "N"
+            text = normalize_spaces(text.replace("NOT-RELATED", ""))
 
         cleaned_description = re.sub(r"^\d{3}\s+", "", text)
         if cleaned_description:
@@ -880,6 +1017,64 @@ def parse_line_rows(
     line.chapter_99_amounts = "; ".join(chapter_amounts) or None
     line.parse_notes = "; ".join(notes)
     return line
+
+
+def money_after_rate(text: str, rate_match: re.Match[str] | None) -> str | None:
+    if not rate_match:
+        return None
+    return parse_money(text[rate_match.end() :])
+
+
+def parse_chapter_99_row(text: str) -> dict[str, str | None] | None:
+    code_match = re.search(r"\b(99\d{2}\.\d{2}\.\d{2})\b", text)
+    if not code_match:
+        return None
+    tail = text[code_match.end() :]
+    rate_match = re.search(r"(FREE|[0-9.]+%)", tail)
+    amount = money_after_rate(tail, rate_match)
+    return {
+        "code": code_match.group(1),
+        "rate": rate_match.group(1) if rate_match else None,
+        "amount": amount,
+    }
+
+
+def parse_quantity_columns(row: list[TextFragment], hts: str) -> dict[str, str | None]:
+    result: dict[str, str | None] = {
+        "gross_weight": None,
+        "gross_unit": None,
+        "net_quantity": None,
+        "net_unit": None,
+    }
+    unit_candidates: list[tuple[float, str, str]] = []
+    number_candidates: list[tuple[float, str]] = []
+
+    for fragment in row:
+        if not 145 <= fragment.x <= 335:
+            continue
+        text = normalize_spaces(fragment.text.replace(hts, ""))
+        if not text:
+            continue
+        for match in re.finditer(rf"([0-9,]+(?:\.\d+)?)\s+({REPORTING_UNIT_PATTERN})", text):
+            unit_candidates.append((fragment.x + match.start() * 0.1, match.group(1), match.group(2)))
+        if re.fullmatch(r"[0-9,]+(?:\.\d+)?", text):
+            number_candidates.append((fragment.x, text))
+
+    if unit_candidates:
+        net_x, net_quantity, net_unit = sorted(unit_candidates, key=lambda item: item[0])[-1]
+        result["net_quantity"] = net_quantity
+        result["net_unit"] = net_unit
+
+        gross_unit_candidates = [item for item in unit_candidates if item[0] < net_x - 8]
+        if gross_unit_candidates:
+            gross_x, gross_weight, gross_unit = sorted(gross_unit_candidates, key=lambda item: item[0])[-1]
+            result["gross_weight"] = gross_weight
+            result["gross_unit"] = gross_unit
+        elif number_candidates:
+            _, gross_weight = sorted(number_candidates, key=lambda item: abs(item[0] - 205))[0]
+            result["gross_weight"] = gross_weight
+
+    return result
 
 
 def parse_main_hts_row(
@@ -935,6 +1130,14 @@ def parse_main_hts_row(
         if money:
             result["duty_amount"] = money
 
+    quantity_columns = parse_quantity_columns(row, hts)
+    if quantity_columns["gross_weight"]:
+        result["gross_weight"] = quantity_columns["gross_weight"]
+        result["gross_unit"] = quantity_columns["gross_unit"]
+    if quantity_columns["net_quantity"]:
+        result["net_quantity"] = quantity_columns["net_quantity"]
+        result["net_unit"] = quantity_columns["net_unit"]
+
     for fragment in row:
         text = normalize_spaces(fragment.text)
         if fragment.x < 150:
@@ -942,7 +1145,7 @@ def parse_main_hts_row(
                 rf"{re.escape(hts)}\s+([0-9,]+(?:\.\d+)?)\s+({REPORTING_UNIT_PATTERN})",
                 text,
             )
-            if match:
+            if match and not result["gross_weight"]:
                 result["gross_weight"] = match.group(1)
                 result["gross_unit"] = match.group(2)
         if 150 <= fragment.x <= 235:
@@ -950,7 +1153,7 @@ def parse_main_hts_row(
                 rf"([0-9,]+(?:\.\d+)?)\s+({REPORTING_UNIT_PATTERN})",
                 text,
             )
-            if match:
+            if match and not result["gross_weight"]:
                 result["gross_weight"] = match.group(1)
                 result["gross_unit"] = match.group(2)
         if 235 <= fragment.x <= 335:
@@ -958,7 +1161,7 @@ def parse_main_hts_row(
                 rf"([0-9,]+(?:\.\d+)?)\s+({REPORTING_UNIT_PATTERN})",
                 text,
             )
-            if match:
+            if match and not result["net_quantity"]:
                 result["net_quantity"] = match.group(1)
                 result["net_unit"] = match.group(2)
         if 330 <= fragment.x < 398:

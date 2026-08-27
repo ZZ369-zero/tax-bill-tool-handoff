@@ -39,7 +39,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.10"
+APP_VERSION = "0.1.11"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 
 
@@ -373,6 +373,18 @@ def format_pdf_money(value: Any, *, keep_cents: bool = True) -> str:
     return f"${number}" if number else ""
 
 
+def format_pdf_money_like_original(
+    value: Any,
+    original_text: Any,
+    *,
+    keep_cents: bool = True,
+) -> str:
+    number = format_pdf_number(value, keep_cents=keep_cents)
+    if not number:
+        return ""
+    return f"${number}" if "$" in display(original_text) else number
+
+
 def values_equal(left: Any, right: Any) -> bool:
     left_decimal = parser.parse_decimal(left)
     right_decimal = parser.parse_decimal(right)
@@ -471,16 +483,233 @@ def row_text(row: list[Any]) -> str:
 
 
 def page_line_starts(fragments: list[Any]) -> list[Any]:
+    page_bottoms = {
+        page: parser.page_line_table_bottom(fragments, page)
+        for page in {fragment.page for fragment in fragments}
+    }
     starts = [
         fragment
         for fragment in fragments
-        if 35 <= fragment.x <= 55
+        if 20 <= fragment.x <= 55
         and parser.re.match(r"^\s*\d{3}(?:\s|$)", fragment.text.strip())
         and not fragment.text.strip().startswith("499")
         and fragment.y < parser.page_line_table_top(fragment.page)
-        and fragment.y > (280 if fragment.page == 1 else 40)
+        and fragment.y > page_bottoms.get(fragment.page, 40.0)
     ]
     return sorted(starts, key=lambda fragment: (fragment.page, -fragment.y))
+
+
+def zone_text(row: list[Any], x_min: float, x_max: float) -> str | None:
+    fragments = [fragment for fragment in row if x_min <= fragment.x <= x_max]
+    if not fragments:
+        return None
+    return parser.normalize_spaces("".join(fragment.text for fragment in sorted(fragments, key=lambda f: f.x)))
+
+
+def amount_target_for_fragment(fragment: Any, amount: str) -> dict[str, Any]:
+    text = display(fragment.text)
+    styled_amount = f"${amount}" if "$" in text else amount
+    if styled_amount not in text:
+        styled_amount = amount
+    return inline_amount_target(fragment, styled_amount)
+
+
+def zone_amount_target(row: list[Any], x_min: float, x_max: float) -> dict[str, Any] | None:
+    fragments = [fragment for fragment in row if x_min <= fragment.x <= x_max]
+    for fragment in sorted(fragments, key=lambda f: f.x, reverse=True):
+        text = display(fragment.text)
+        amount = parser.money_after_dollar(text, last=True) or parser.parse_last_money(text)
+        if amount:
+            return amount_target_for_fragment(fragment, amount)
+    text = zone_text(row, x_min, x_max)
+    if not text:
+        return None
+    amount = parser.money_after_dollar(text, last=True) or parser.parse_last_money(text)
+    if not amount:
+        return None
+    return {"text": f"${amount}" if "$" in text else amount, "x_min": x_min, "x_max": x_max}
+
+
+def zone_amount_text(row: list[Any], x_min: float, x_max: float) -> str | None:
+    target = zone_amount_target(row, x_min, x_max)
+    return target.get("text") if target else None
+
+
+def amount_target_at_box(
+    fragments: list[Any],
+    *,
+    page: int = 1,
+    value: Any,
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+) -> dict[str, Any] | None:
+    expected = parser.parse_decimal(value)
+    if expected is None:
+        return None
+    candidates: list[dict[str, Any]] = []
+    for fragment in fragments:
+        if fragment.page != page or not (x_min <= fragment.x <= x_max) or not (y_min <= fragment.y <= y_max):
+            continue
+        text = display(fragment.text)
+        amount = parser.money_after_dollar(text, last=True) or parser.parse_last_money(text)
+        if amount and parser.parse_decimal(amount) == expected:
+            target = amount_target_for_fragment(fragment, amount)
+            target["y"] = fragment.y
+            candidates.append(target)
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: item["y"], reverse=True)[0]
+
+
+def inline_amount_target(
+    fragment: Any,
+    amount: str,
+    offset: int | None = None,
+    *,
+    left_padding: float = 30,
+) -> dict[str, Any]:
+    text = display(fragment.text)
+    offset = text.find(amount) if offset is None else offset
+    if offset < 0:
+        return {"y": fragment.y, "text": amount}
+    char_width = max(float(fragment.size or 10) * 0.6, 4.5)
+    x_min = float(fragment.x) + offset * char_width
+    x_max = x_min + len(amount) * char_width
+    return {
+        "y": fragment.y,
+        "text": amount,
+        "x_min": max(0, x_min - left_padding),
+        "x_max": x_max + 2,
+        "alignment": "right",
+    }
+
+
+def fee_summary_target(
+    fragments: list[Any],
+    *,
+    fee_code: str,
+    label: str,
+    value: Any,
+) -> dict[str, Any] | None:
+    expected = parser.parse_decimal(value)
+    if expected is None:
+        return None
+    dotted_label = parser.re.compile(r"\.?".join(parser.re.escape(char) for char in label) + r"\.?", parser.re.I)
+    for fragment in fragments:
+        text = display(fragment.text)
+        if fragment.page != 1 or fee_code not in text or not dotted_label.search(text):
+            continue
+        amount = parser.money_after_dollar(text, last=True) or parser.parse_last_money(text)
+        if amount and parser.parse_decimal(amount) == expected:
+            target = amount_target_for_fragment(fragment, amount)
+            target["y"] = fragment.y
+            return target
+    return None
+
+
+def document_replacement_targets(original_path: Path, document: Any) -> dict[str, dict[str, Any]]:
+    if not original_path.exists():
+        return {}
+    reader = PdfReader(str(original_path))
+    fragments = parser.extract_fragments(reader)
+    targets: dict[str, dict[str, Any]] = {}
+    target = amount_target_at_box(
+        fragments,
+        value=document.total_entered_value,
+        x_min=165,
+        x_max=270,
+        y_min=210,
+        y_max=275,
+    )
+    if target:
+        targets["total_entered_value"] = target
+    target = fee_summary_target(fragments, fee_code="499", label="MPF", value=document.mpf_total)
+    if target:
+        targets["mpf_summary"] = target
+    target = fee_summary_target(fragments, fee_code="501", label="HMF", value=document.hmf_total)
+    if target:
+        targets["hmf_summary"] = target
+    target = amount_target_at_box(
+        fragments,
+        value=document.total_other_fees or document.other_total,
+        x_min=165,
+        x_max=270,
+        y_min=190,
+        y_max=245,
+    )
+    if target:
+        targets["block_39_other_fees"] = target
+    target = amount_target_at_box(
+        fragments,
+        value=document.duty_total,
+        x_min=520,
+        x_max=595,
+        y_min=225,
+        y_max=260,
+    )
+    if target:
+        targets["duty_total"] = target
+    target = amount_target_at_box(
+        fragments,
+        value=document.other_total,
+        x_min=520,
+        x_max=595,
+        y_min=185,
+        y_max=215,
+    )
+    if target:
+        targets["other_total"] = target
+    target = amount_target_at_box(
+        fragments,
+        value=document.grand_total,
+        x_min=520,
+        x_max=595,
+        y_min=165,
+        y_max=190,
+    )
+    if target:
+        targets["grand_total"] = target
+    invoice_page = document.pages
+    invoice_value = parser.parse_decimal(document.invoice_value)
+    invoice_entered_value = parser.parse_decimal(document.invoice_entered_value)
+    total_entered_value = parser.parse_decimal(document.total_entered_value)
+    for fragment in fragments:
+        if fragment.page != invoice_page:
+            continue
+        text = display(fragment.text)
+        iv_match = parser.re.search(r"\bI\.V\.\s+([0-9,]+\.\d{2})", text, parser.re.I)
+        if iv_match and invoice_value is not None and parser.parse_decimal(iv_match.group(1)) == invoice_value:
+            targets["invoice_value"] = inline_amount_target(
+                fragment,
+                iv_match.group(1),
+                iv_match.start(1),
+            )
+        ev_match = parser.re.search(r"\bE\.V\.\s+([0-9,]+\.\d{2})", text, parser.re.I)
+        if (
+            ev_match
+            and invoice_entered_value is not None
+            and parser.parse_decimal(ev_match.group(1)) == invoice_entered_value
+        ):
+            targets["invoice_entered_value"] = inline_amount_target(
+                fragment,
+                ev_match.group(1),
+                ev_match.start(1),
+            )
+        as_match = parser.re.search(r"\bAS\s+([0-9,]+)\b", text, parser.re.I)
+        if (
+            as_match
+            and total_entered_value is not None
+            and parser.parse_decimal(as_match.group(1)) == total_entered_value
+        ):
+            targets["invoice_entered_value_as"] = inline_amount_target(
+                fragment,
+                as_match.group(1),
+                as_match.start(1),
+                left_padding=8,
+            )
+    return targets
 
 
 def original_line_targets(original_path: Path, parsed: Any) -> dict[tuple[int, str], dict[str, Any]]:
@@ -498,22 +727,29 @@ def original_line_targets(original_path: Path, parsed: Any) -> dict[tuple[int, s
         if original_line is None:
             continue
         next_start = starts[index + 1] if index + 1 < len(starts) else None
-        y_low = 280.0 if start.page == 1 else 40.0
+        y_low = parser.page_line_table_bottom(fragments, start.page)
         if next_start and next_start.page == start.page:
             y_low = next_start.y + 1.0
         rows = parser.rows_for_line(fragments, start.page, start.y, y_low)
         hts_y = None
+        hts_row: list[Any] | None = None
         chapter_ys: list[float] = []
+        chapter_targets: list[dict[str, Any] | None] = []
         mpf_y = None
+        mpf_target = None
         hmf_y = None
+        hmf_target = None
         for row in rows:
             text = row_text(row)
             if original_line.hts and original_line.hts in text:
                 hts_y = row[0].y
+                hts_row = row
             if "Merchandise Processing Fee" in text:
                 mpf_y = row[0].y
+                mpf_target = zone_amount_target(row, 500, 590)
             if "Harbor Maintenance Fee" in text:
                 hmf_y = row[0].y
+                hmf_target = zone_amount_target(row, 500, 590)
             chapter_codes = [
                 item.strip()
                 for item in (original_line.chapter_99_codes or "").split(";")
@@ -521,12 +757,25 @@ def original_line_targets(original_path: Path, parsed: Any) -> dict[tuple[int, s
             ]
             if any(code in text for code in chapter_codes):
                 chapter_ys.append(row[0].y)
+                chapter_targets.append(zone_amount_target(row, 500, 590))
+        entered_value_target = zone_amount_target(hts_row, 330, 398) if hts_row else None
+        base_duty_target = zone_amount_target(hts_row, 500, 590) if hts_row else None
         targets[(start.page, line_no)] = {
             "original": original_line,
             "hts_y": hts_y,
+            "entered_value_target": entered_value_target,
+            "entered_value_text": entered_value_target.get("text") if entered_value_target else None,
+            "base_duty_target": base_duty_target,
+            "base_duty_text": base_duty_target.get("text") if base_duty_target else None,
             "chapter_ys": chapter_ys,
+            "chapter_targets": chapter_targets,
+            "chapter_texts": [item.get("text") if item else None for item in chapter_targets],
             "mpf_y": mpf_y,
+            "mpf_target": mpf_target,
+            "mpf_text": mpf_target.get("text") if mpf_target else None,
             "hmf_y": hmf_y,
+            "hmf_target": hmf_target,
+            "hmf_text": hmf_target.get("text") if hmf_target else None,
         }
 
     return targets
@@ -619,6 +868,7 @@ def build_pdf_text_replacements(
     parsed = parser.parse_pdf(original_path, "original", f"upload|{original_path.stem}")
     original_document = parsed.document
     targets = original_line_targets(original_path, parsed)
+    document_targets = document_replacement_targets(original_path, original_document)
     replacements: list[PdfTextReplacement] = []
     transport_changed = "document:transport_mode" in modified
     entered_changed_any = False
@@ -720,17 +970,26 @@ def build_pdf_text_replacements(
                 y=hts_y,
             )
         if entered_value_changed:
+            entered_value_target = target.get("entered_value_target") or {}
+            old_entered_text = entered_value_target.get("text") or target.get("entered_value_text") or format_pdf_money(
+                original_line.entered_value,
+                keep_cents=False,
+            )
             add_replacement(
                 replacements,
                 page=line.page,
                 field=f"line {line.line_no} entered value",
                 old_value=original_line.entered_value,
                 new_value=line.entered_value,
-                old_text=format_pdf_money(original_line.entered_value, keep_cents=False),
-                new_text=format_pdf_money(line.entered_value, keep_cents=False),
-                x_min=350,
-                x_max=398,
-                y=hts_y,
+                old_text=old_entered_text,
+                new_text=format_pdf_money_like_original(
+                    line.entered_value,
+                    old_entered_text,
+                    keep_cents=False,
+                ),
+                x_min=entered_value_target.get("x_min", 350),
+                x_max=entered_value_target.get("x_max", 398),
+                y=entered_value_target.get("y", hts_y),
             )
         if rate_changed:
             add_replacement(
@@ -747,171 +1006,238 @@ def build_pdf_text_replacements(
                 alignment="left",
             )
         if line_duty_changed:
+            base_duty_target = target.get("base_duty_target") or {}
+            old_base_duty_text = base_duty_target.get("text") or target.get("base_duty_text") or format_pdf_money(
+                original_line.duty_amount
+            )
             add_replacement(
                 replacements,
                 page=line.page,
                 field=f"line {line.line_no} base duty",
                 old_value=original_line.duty_amount,
                 new_value=line.calculated_base_duty,
-                old_text=format_pdf_money(original_line.duty_amount),
-                new_text=format_pdf_money(line.calculated_base_duty),
-                x_min=530,
-                x_max=590,
-                y=hts_y,
+                old_text=old_base_duty_text,
+                new_text=format_pdf_money_like_original(line.calculated_base_duty, old_base_duty_text),
+                x_min=base_duty_target.get("x_min", 530),
+                x_max=base_duty_target.get("x_max", 590),
+                y=base_duty_target.get("y", hts_y),
             )
 
         if entered_value_changed or mpf_changed:
             old_chapter_amounts = money_values(original_line.chapter_99_amounts)
             new_chapter_amounts = calculated_chapter_amounts(line)
             chapter_ys = target.get("chapter_ys") or []
+            chapter_texts = target.get("chapter_texts") or []
+            chapter_targets = target.get("chapter_targets") or []
             if entered_value_changed:
                 for index, (old_amount, new_amount) in enumerate(zip(old_chapter_amounts, new_chapter_amounts)):
+                    chapter_target = (
+                        chapter_targets[index]
+                        if index < len(chapter_targets) and chapter_targets[index]
+                        else {}
+                    )
+                    old_chapter_text = chapter_target.get("text")
+                    if not old_chapter_text:
+                        old_chapter_text = (
+                            chapter_texts[index]
+                            if index < len(chapter_texts) and chapter_texts[index]
+                            else format_pdf_money(old_amount)
+                        )
                     add_replacement(
                         replacements,
                         page=line.page,
                         field=f"line {line.line_no} chapter 99 duty {index + 1}",
                         old_value=old_amount,
                         new_value=new_amount,
-                        old_text=format_pdf_money(old_amount),
-                        new_text=format_pdf_money(new_amount),
-                        x_min=530,
-                        x_max=590,
-                        y=chapter_ys[index] if index < len(chapter_ys) else None,
+                        old_text=old_chapter_text,
+                        new_text=format_pdf_money_like_original(new_amount, old_chapter_text),
+                        x_min=chapter_target.get("x_min", 530),
+                        x_max=chapter_target.get("x_max", 590),
+                        y=chapter_target.get(
+                            "y",
+                            chapter_ys[index] if index < len(chapter_ys) else None,
+                        ),
                     )
+            mpf_target = target.get("mpf_target") or {}
+            old_mpf_text = mpf_target.get("text") or target.get("mpf_text") or format_pdf_money(
+                original_line.mpf_amount
+            )
             add_replacement(
                 replacements,
                 page=line.page,
                 field=f"line {line.line_no} MPF",
                 old_value=original_line.mpf_amount,
                 new_value=line.calculated_mpf_amount,
-                old_text=format_pdf_money(original_line.mpf_amount),
-                new_text=format_pdf_money(line.calculated_mpf_amount),
-                x_min=530,
-                x_max=590,
-                y=target.get("mpf_y"),
+                old_text=old_mpf_text,
+                new_text=format_pdf_money_like_original(line.calculated_mpf_amount, old_mpf_text),
+                x_min=mpf_target.get("x_min", 530),
+                x_max=mpf_target.get("x_max", 590),
+                y=mpf_target.get("y", target.get("mpf_y")),
             )
 
         if (entered_value_changed or transport_changed) and (
             original_line.hmf_amount is not None or line.calculated_hmf_amount is not None
         ):
+            hmf_target = target.get("hmf_target") or {}
+            old_hmf_text = hmf_target.get("text") or target.get("hmf_text") or format_pdf_money(
+                original_line.hmf_amount
+            )
             add_replacement(
                 replacements,
                 page=line.page,
                 field=f"line {line.line_no} HMF",
                 old_value=original_line.hmf_amount,
                 new_value=line.calculated_hmf_amount,
-                old_text=format_pdf_money(original_line.hmf_amount),
-                new_text=format_pdf_money(line.calculated_hmf_amount),
-                x_min=530,
-                x_max=590,
-                y=target.get("hmf_y"),
+                old_text=old_hmf_text,
+                new_text=format_pdf_money_like_original(line.calculated_hmf_amount, old_hmf_text),
+                x_min=hmf_target.get("x_min", 530),
+                x_max=hmf_target.get("x_max", 590),
+                y=hmf_target.get("y", target.get("hmf_y")),
             )
 
     if entered_changed_any:
+        target = document_targets.get("total_entered_value", {})
         add_replacement(
             replacements,
             page=1,
             field="total entered value",
             old_value=original_document.total_entered_value,
             new_value=document.total_entered_value,
-            old_text=format_pdf_number(original_document.total_entered_value, keep_cents=False),
+            old_text=target.get(
+                "text",
+                format_pdf_number(original_document.total_entered_value, keep_cents=False),
+            ),
             new_text=format_pdf_number(document.total_entered_value, keep_cents=False),
-            x_min=175,
-            x_max=260,
-            y=248,
-            alignment="left",
+            x_min=target.get("x_min", 175),
+            x_max=target.get("x_max", 260),
+            y=target.get("y", 248),
+            alignment=target.get("alignment", "left"),
         )
+        target = document_targets.get("mpf_summary", {})
+        old_mpf_summary_text = target.get("text", format_pdf_money(original_document.mpf_total))
         add_replacement(
             replacements,
             page=1,
             field="MPF summary",
             old_value=original_document.mpf_total,
             new_value=document.calculated_mpf_total,
-            old_text=format_pdf_money(original_document.mpf_total),
-            new_text=format_pdf_money(document.calculated_mpf_total),
-            x_min=120,
-            x_max=175,
-            y=258,
+            old_text=old_mpf_summary_text,
+            new_text=format_pdf_money_like_original(document.calculated_mpf_total, old_mpf_summary_text),
+            x_min=target.get("x_min", 120),
+            x_max=target.get("x_max", 175),
+            y=target.get("y", 258),
         )
     if duty_changed_any:
+        target = document_targets.get("duty_total", {})
+        old_duty_total_text = target.get("text", format_pdf_money(original_document.duty_total))
         add_replacement(
             replacements,
             page=1,
             field="duty total",
             old_value=original_document.duty_total,
             new_value=document.calculated_duty_total,
-            old_text=format_pdf_money(original_document.duty_total),
-            new_text=format_pdf_money(document.calculated_duty_total),
-            x_min=530,
-            x_max=590,
-            y=241.5,
+            old_text=old_duty_total_text,
+            new_text=format_pdf_money_like_original(document.calculated_duty_total, old_duty_total_text),
+            x_min=target.get("x_min", 530),
+            x_max=target.get("x_max", 590),
+            y=target.get("y", 241.5),
         )
     if other_changed_any:
         if original_document.hmf_total is not None or document.calculated_hmf_total is not None:
+            target = document_targets.get("hmf_summary", {})
+            old_hmf_summary_text = target.get("text", format_pdf_money(original_document.hmf_total))
             add_replacement(
                 replacements,
                 page=1,
                 field="HMF summary",
                 old_value=original_document.hmf_total,
                 new_value=document.calculated_hmf_total,
-                old_text=format_pdf_money(original_document.hmf_total),
-                new_text=format_pdf_money(document.calculated_hmf_total),
-                x_min=120,
-                x_max=175,
-                y=249,
+                old_text=old_hmf_summary_text,
+                new_text=format_pdf_money_like_original(document.calculated_hmf_total, old_hmf_summary_text),
+                x_min=target.get("x_min", 120),
+                x_max=target.get("x_max", 175),
+                y=target.get("y", 249),
             )
+        target = document_targets.get("block_39_other_fees", {})
         add_replacement(
             replacements,
             page=1,
             field="block 39 other fees",
             old_value=original_document.total_other_fees or original_document.other_total,
             new_value=document.calculated_other_total,
-            old_text=format_pdf_number(original_document.total_other_fees or original_document.other_total),
+            old_text=target.get(
+                "text",
+                format_pdf_number(original_document.total_other_fees or original_document.other_total),
+            ),
             new_text=format_pdf_number(document.calculated_other_total),
-            x_min=175,
-            x_max=260,
-            y=218,
-            alignment="left",
+            x_min=target.get("x_min", 175),
+            x_max=target.get("x_max", 260),
+            y=target.get("y", 218),
+            alignment=target.get("alignment", "left"),
         )
+        target = document_targets.get("other_total", {})
+        old_other_total_text = target.get("text", format_pdf_money(original_document.other_total))
         add_replacement(
             replacements,
             page=1,
             field="other total",
             old_value=original_document.other_total,
             new_value=document.calculated_other_total,
-            old_text=format_pdf_money(original_document.other_total),
-            new_text=format_pdf_money(document.calculated_other_total),
-            x_min=530,
-            x_max=590,
-            y=197.5,
+            old_text=old_other_total_text,
+            new_text=format_pdf_money_like_original(document.calculated_other_total, old_other_total_text),
+            x_min=target.get("x_min", 530),
+            x_max=target.get("x_max", 590),
+            y=target.get("y", 197.5),
         )
     if duty_changed_any or other_changed_any:
+        target = document_targets.get("grand_total", {})
+        old_grand_total_text = target.get("text", format_pdf_money(original_document.grand_total))
         add_replacement(
             replacements,
             page=1,
             field="grand total",
             old_value=original_document.grand_total,
             new_value=document.calculated_grand_total,
-            old_text=format_pdf_money(original_document.grand_total),
-            new_text=format_pdf_money(document.calculated_grand_total),
-            x_min=530,
-            x_max=590,
-            y=175.5,
+            old_text=old_grand_total_text,
+            new_text=format_pdf_money_like_original(document.calculated_grand_total, old_grand_total_text),
+            x_min=target.get("x_min", 530),
+            x_max=target.get("x_max", 590),
+            y=target.get("y", 175.5),
         )
 
     if entered_changed_any:
         invoice_page = original_document.pages
+        invoice_value_target = document_targets.get("invoice_value", {})
+        invoice_value_old_text = invoice_value_target.get(
+            "text",
+            f"{format_pdf_number(original_document.invoice_value)} USD",
+        )
+        invoice_value_new_text = (
+            format_pdf_number(document.invoice_value)
+            if invoice_value_target
+            else f"{format_pdf_number(document.invoice_value)} USD"
+        )
         add_replacement(
             replacements,
             page=invoice_page,
             field="invoice value",
             old_value=original_document.invoice_value,
             new_value=document.invoice_value,
-            old_text=f"{format_pdf_number(original_document.invoice_value)} USD",
-            new_text=f"{format_pdf_number(document.invoice_value)} USD",
-            x_min=200,
-            x_max=390,
-            y=None,
+            old_text=invoice_value_old_text,
+            new_text=invoice_value_new_text,
+            x_min=invoice_value_target.get("x_min", 200),
+            x_max=invoice_value_target.get("x_max", 390),
+            y=invoice_value_target.get("y"),
+        )
+        invoice_entered_target = document_targets.get("invoice_entered_value", {})
+        invoice_entered_old_text = invoice_entered_target.get(
+            "text",
+            f"{format_pdf_number(original_document.invoice_entered_value)} USD",
+        )
+        invoice_entered_new_text = (
+            format_pdf_number(document.invoice_entered_value)
+            if invoice_entered_target
+            else f"{format_pdf_number(document.invoice_entered_value)} USD"
         )
         add_replacement(
             replacements,
@@ -919,12 +1245,26 @@ def build_pdf_text_replacements(
             field="invoice entered value",
             old_value=original_document.invoice_entered_value,
             new_value=document.invoice_entered_value,
-            old_text=f"{format_pdf_number(original_document.invoice_entered_value)} USD",
-            new_text=f"{format_pdf_number(document.invoice_entered_value)} USD",
-            x_min=480,
-            x_max=590,
-            y=None,
+            old_text=invoice_entered_old_text,
+            new_text=invoice_entered_new_text,
+            x_min=invoice_entered_target.get("x_min", 480),
+            x_max=invoice_entered_target.get("x_max", 590),
+            y=invoice_entered_target.get("y"),
         )
+        invoice_entered_as_target = document_targets.get("invoice_entered_value_as")
+        if invoice_entered_as_target:
+            add_replacement(
+                replacements,
+                page=invoice_page,
+                field="invoice entered value AS",
+                old_value=original_document.total_entered_value,
+                new_value=document.total_entered_value,
+                old_text=invoice_entered_as_target["text"],
+                new_text=format_pdf_number(document.total_entered_value, keep_cents=False),
+                x_min=invoice_entered_as_target.get("x_min", 480),
+                x_max=invoice_entered_as_target.get("x_max", 590),
+                y=invoice_entered_as_target.get("y"),
+            )
     return replacements
 
 
@@ -1128,6 +1468,8 @@ def health() -> dict[str, str]:
         "hts_mismatch_strategy": "row-order-when-counts-match",
         "entered_value_parsing": "split-entered-value-and-rate-columns",
         "bl_awb_normalization": "carrier-prefix-space-removed",
+        "new_template_parsing": "readable-text-with-coordinate-repair",
+        "new_template_pdf_generation": "dynamic-money-targets",
     }
 
 

@@ -1,6 +1,7 @@
 # Generated reports and uploaded/user data
 output/
 uploads/
+tmp/
 *.log
 *.pdf
 *.PDF
