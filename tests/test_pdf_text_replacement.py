@@ -14,10 +14,13 @@ from reportlab.pdfgen import canvas
 
 from web_app.app import (
     PdfTextReplacement,
+    amount_target_for_fragment,
     apply_page_replacements,
     build_pdf_text_replacements,
     line_field_key,
+    overlay_page_replacements,
     quantity_text,
+    reportlab_overlay_font_name,
     values_equal,
 )
 
@@ -127,6 +130,59 @@ class PdfTextReplacementTests(unittest.TestCase):
     def test_numeric_comparison_ignores_money_formatting(self) -> None:
         self.assertTrue(values_equal("2,533", "2533.00"))
         self.assertFalse(values_equal("2,533", "2,785"))
+
+    def test_amount_targets_keep_original_fragment_font_style(self) -> None:
+        fragment = SimpleNamespace(
+            text="      $2,040.53",
+            x=520,
+            y=175.5,
+            size=10,
+            font="/GZCVGJ+CourierNewPSMT",
+        )
+
+        target = amount_target_for_fragment(fragment, "2,040.53")
+
+        self.assertEqual(reportlab_overlay_font_name(fragment.font), "Courier")
+        self.assertEqual(target["font_name"], "Courier")
+        self.assertEqual(target["font_size"], 10)
+
+    def test_overlay_replacements_use_requested_font(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.pdf"
+            output = Path(temp_dir) / "output.pdf"
+            self.make_pdf(source)
+
+            writer = PdfWriter(clone_from=str(source))
+            replacement = PdfTextReplacement(
+                page=1,
+                field="total entered value",
+                old_text="5,210",
+                new_text="5,780",
+                x_min=225,
+                x_max=270,
+                y=258,
+                alignment="right",
+                font_name="Courier",
+                font_size=10,
+            )
+
+            applied = overlay_page_replacements(writer.pages[0], [replacement])
+            with output.open("wb") as stream:
+                writer.write(stream)
+
+            page = PdfReader(str(output)).pages[0]
+            fonts = (page.get("/Resources") or {}).get("/Font") or {}
+            try:
+                fonts = fonts.get_object()
+            except AttributeError:
+                pass
+            font_names = {
+                str(font.get_object().get("/BaseFont"))
+                for font in fonts.values()
+            }
+
+        self.assertEqual(applied, [replacement])
+        self.assertIn("/Courier", font_names)
 
     def test_no_modified_fields_returns_without_reading_pdf(self) -> None:
         replacements = build_pdf_text_replacements(

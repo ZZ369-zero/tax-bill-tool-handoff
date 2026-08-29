@@ -39,7 +39,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.11"
+APP_VERSION = "0.1.12"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 
 
@@ -106,6 +106,8 @@ class PdfTextReplacement:
     y: float | None = None
     alignment: str = "right"
     y_tolerance: float = 0.8
+    font_name: str = "Helvetica"
+    font_size: float = 8.0
 
 
 def dataclass_from_dict(cls, payload: dict[str, Any]):
@@ -461,6 +463,8 @@ def add_replacement(
     x_max: float,
     y: float | None,
     alignment: str = "right",
+    font_name: str | None = None,
+    font_size: float | None = None,
 ) -> None:
     if values_equal(old_value, new_value):
         return
@@ -474,12 +478,77 @@ def add_replacement(
             x_max=x_max,
             y=y,
             alignment=alignment,
+            font_name=font_name or "Helvetica",
+            font_size=float(font_size or 8.0),
         )
     )
 
 
 def row_text(row: list[Any]) -> str:
     return parser.normalize_spaces(" ".join(fragment.text.strip() for fragment in row))
+
+
+def reportlab_overlay_font_name(pdf_font_name: Any) -> str:
+    base_name = display(pdf_font_name).lstrip("/")
+    if "+" in base_name:
+        base_name = base_name.split("+", 1)[1]
+    aliases = {
+        "Arial": "Helvetica",
+        "ArialMT": "Helvetica",
+        "Arial-BoldMT": "Helvetica-Bold",
+        "Arial-ItalicMT": "Helvetica-Oblique",
+        "Arial-BoldItalicMT": "Helvetica-BoldOblique",
+        "CourierNewPSMT": "Courier",
+        "CourierNewPS-BoldMT": "Courier-Bold",
+        "CourierNewPS-ItalicMT": "Courier-Oblique",
+        "CourierNewPS-BoldItalicMT": "Courier-BoldOblique",
+    }
+    font_name = aliases.get(base_name, base_name)
+    try:
+        pdfmetrics.getFont(font_name)
+    except KeyError:
+        return "Helvetica"
+    return font_name
+
+
+def fragment_text_style(fragment: Any | None) -> dict[str, Any]:
+    if fragment is None:
+        return {}
+    try:
+        font_size = float(fragment.size)
+    except (TypeError, ValueError):
+        font_size = 8.0
+    return {
+        "font_name": reportlab_overlay_font_name(getattr(fragment, "font", "")),
+        "font_size": font_size or 8.0,
+    }
+
+
+def row_text_style(row: list[Any] | None) -> dict[str, Any]:
+    if not row:
+        return {}
+    candidates = [
+        fragment
+        for fragment in row
+        if display(fragment.text).strip()
+        and getattr(fragment, "size", 0) >= 8
+    ]
+    if not candidates:
+        return {}
+    return fragment_text_style(candidates[0])
+
+
+def replacement_style(
+    target: dict[str, Any] | None,
+    fallback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    style = dict(fallback or {})
+    if target:
+        if target.get("font_name"):
+            style["font_name"] = target["font_name"]
+        if target.get("font_size"):
+            style["font_size"] = target["font_size"]
+    return style
 
 
 def page_line_starts(fragments: list[Any]) -> list[Any]:
@@ -527,7 +596,12 @@ def zone_amount_target(row: list[Any], x_min: float, x_max: float) -> dict[str, 
     amount = parser.money_after_dollar(text, last=True) or parser.parse_last_money(text)
     if not amount:
         return None
-    return {"text": f"${amount}" if "$" in text else amount, "x_min": x_min, "x_max": x_max}
+    return {
+        "text": f"${amount}" if "$" in text else amount,
+        "x_min": x_min,
+        "x_max": x_max,
+        **row_text_style(row),
+    }
 
 
 def zone_amount_text(row: list[Any], x_min: float, x_max: float) -> str | None:
@@ -572,8 +646,9 @@ def inline_amount_target(
 ) -> dict[str, Any]:
     text = display(fragment.text)
     offset = text.find(amount) if offset is None else offset
+    style = fragment_text_style(fragment)
     if offset < 0:
-        return {"y": fragment.y, "text": amount}
+        return {"y": fragment.y, "text": amount, **style}
     char_width = max(float(fragment.size or 10) * 0.6, 4.5)
     x_min = float(fragment.x) + offset * char_width
     x_max = x_min + len(amount) * char_width
@@ -583,6 +658,7 @@ def inline_amount_target(
         "x_min": max(0, x_min - left_padding),
         "x_max": x_max + 2,
         "alignment": "right",
+        **style,
     }
 
 
@@ -760,8 +836,10 @@ def original_line_targets(original_path: Path, parsed: Any) -> dict[tuple[int, s
                 chapter_targets.append(zone_amount_target(row, 500, 590))
         entered_value_target = zone_amount_target(hts_row, 330, 398) if hts_row else None
         base_duty_target = zone_amount_target(hts_row, 500, 590) if hts_row else None
+        line_style = row_text_style(hts_row) or fragment_text_style(start)
         targets[(start.page, line_no)] = {
             "original": original_line,
+            "line_style": line_style,
             "hts_y": hts_y,
             "entered_value_target": entered_value_target,
             "entered_value_text": entered_value_target.get("text") if entered_value_target else None,
@@ -903,6 +981,7 @@ def build_pdf_text_replacements(
             continue
 
         hts_y = target.get("hts_y")
+        line_style = target.get("line_style", {})
         entered_changed_any = entered_changed_any or entered_value_changed
         duty_changed_any = duty_changed_any or line_duty_changed
         other_changed_any = other_changed_any or entered_value_changed or mpf_changed
@@ -920,6 +999,7 @@ def build_pdf_text_replacements(
                 x_max=190,
                 y=hts_y,
                 alignment="left",
+                **replacement_style(None, line_style),
             )
 
         if gross_weight_changed:
@@ -944,6 +1024,7 @@ def build_pdf_text_replacements(
                 x_min=185,
                 x_max=235,
                 y=hts_y,
+                **replacement_style(None, line_style),
             )
 
         if net_quantity_changed:
@@ -968,6 +1049,7 @@ def build_pdf_text_replacements(
                 x_min=230,
                 x_max=350,
                 y=hts_y,
+                **replacement_style(None, line_style),
             )
         if entered_value_changed:
             entered_value_target = target.get("entered_value_target") or {}
@@ -990,6 +1072,7 @@ def build_pdf_text_replacements(
                 x_min=entered_value_target.get("x_min", 350),
                 x_max=entered_value_target.get("x_max", 398),
                 y=entered_value_target.get("y", hts_y),
+                **replacement_style(entered_value_target, line_style),
             )
         if rate_changed:
             add_replacement(
@@ -1004,6 +1087,7 @@ def build_pdf_text_replacements(
                 x_max=535,
                 y=hts_y,
                 alignment="left",
+                **replacement_style(None, line_style),
             )
         if line_duty_changed:
             base_duty_target = target.get("base_duty_target") or {}
@@ -1021,6 +1105,7 @@ def build_pdf_text_replacements(
                 x_min=base_duty_target.get("x_min", 530),
                 x_max=base_duty_target.get("x_max", 590),
                 y=base_duty_target.get("y", hts_y),
+                **replacement_style(base_duty_target, line_style),
             )
 
         if entered_value_changed or mpf_changed:
@@ -1057,6 +1142,7 @@ def build_pdf_text_replacements(
                             "y",
                             chapter_ys[index] if index < len(chapter_ys) else None,
                         ),
+                        **replacement_style(chapter_target, line_style),
                     )
             mpf_target = target.get("mpf_target") or {}
             old_mpf_text = mpf_target.get("text") or target.get("mpf_text") or format_pdf_money(
@@ -1073,6 +1159,7 @@ def build_pdf_text_replacements(
                 x_min=mpf_target.get("x_min", 530),
                 x_max=mpf_target.get("x_max", 590),
                 y=mpf_target.get("y", target.get("mpf_y")),
+                **replacement_style(mpf_target, line_style),
             )
 
         if (entered_value_changed or transport_changed) and (
@@ -1093,6 +1180,7 @@ def build_pdf_text_replacements(
                 x_min=hmf_target.get("x_min", 530),
                 x_max=hmf_target.get("x_max", 590),
                 y=hmf_target.get("y", target.get("hmf_y")),
+                **replacement_style(hmf_target, line_style),
             )
 
     if entered_changed_any:
@@ -1112,6 +1200,7 @@ def build_pdf_text_replacements(
             x_max=target.get("x_max", 260),
             y=target.get("y", 248),
             alignment=target.get("alignment", "left"),
+            **replacement_style(target),
         )
         target = document_targets.get("mpf_summary", {})
         old_mpf_summary_text = target.get("text", format_pdf_money(original_document.mpf_total))
@@ -1126,6 +1215,7 @@ def build_pdf_text_replacements(
             x_min=target.get("x_min", 120),
             x_max=target.get("x_max", 175),
             y=target.get("y", 258),
+            **replacement_style(target),
         )
     if duty_changed_any:
         target = document_targets.get("duty_total", {})
@@ -1141,6 +1231,7 @@ def build_pdf_text_replacements(
             x_min=target.get("x_min", 530),
             x_max=target.get("x_max", 590),
             y=target.get("y", 241.5),
+            **replacement_style(target),
         )
     if other_changed_any:
         if original_document.hmf_total is not None or document.calculated_hmf_total is not None:
@@ -1157,6 +1248,7 @@ def build_pdf_text_replacements(
                 x_min=target.get("x_min", 120),
                 x_max=target.get("x_max", 175),
                 y=target.get("y", 249),
+                **replacement_style(target),
             )
         target = document_targets.get("block_39_other_fees", {})
         add_replacement(
@@ -1174,6 +1266,7 @@ def build_pdf_text_replacements(
             x_max=target.get("x_max", 260),
             y=target.get("y", 218),
             alignment=target.get("alignment", "left"),
+            **replacement_style(target),
         )
         target = document_targets.get("other_total", {})
         old_other_total_text = target.get("text", format_pdf_money(original_document.other_total))
@@ -1188,6 +1281,7 @@ def build_pdf_text_replacements(
             x_min=target.get("x_min", 530),
             x_max=target.get("x_max", 590),
             y=target.get("y", 197.5),
+            **replacement_style(target),
         )
     if duty_changed_any or other_changed_any:
         target = document_targets.get("grand_total", {})
@@ -1203,6 +1297,7 @@ def build_pdf_text_replacements(
             x_min=target.get("x_min", 530),
             x_max=target.get("x_max", 590),
             y=target.get("y", 175.5),
+            **replacement_style(target),
         )
 
     if entered_changed_any:
@@ -1228,6 +1323,7 @@ def build_pdf_text_replacements(
             x_min=invoice_value_target.get("x_min", 200),
             x_max=invoice_value_target.get("x_max", 390),
             y=invoice_value_target.get("y"),
+            **replacement_style(invoice_value_target),
         )
         invoice_entered_target = document_targets.get("invoice_entered_value", {})
         invoice_entered_old_text = invoice_entered_target.get(
@@ -1250,6 +1346,7 @@ def build_pdf_text_replacements(
             x_min=invoice_entered_target.get("x_min", 480),
             x_max=invoice_entered_target.get("x_max", 590),
             y=invoice_entered_target.get("y"),
+            **replacement_style(invoice_entered_target),
         )
         invoice_entered_as_target = document_targets.get("invoice_entered_value_as")
         if invoice_entered_as_target:
@@ -1264,6 +1361,7 @@ def build_pdf_text_replacements(
                 x_min=invoice_entered_as_target.get("x_min", 480),
                 x_max=invoice_entered_as_target.get("x_max", 590),
                 y=invoice_entered_as_target.get("y"),
+                **replacement_style(invoice_entered_as_target),
             )
     return replacements
 
@@ -1386,15 +1484,17 @@ def overlay_page_replacements(page: Any, replacements: list[PdfTextReplacement])
     height = float(page.mediabox.height)
     packet = BytesIO()
     overlay = canvas.Canvas(packet, pagesize=(width, height))
-    overlay.setFont("Helvetica", 8)
     for replacement in sorted(drawable, key=lambda item: item.x_min, reverse=True):
         y = float(replacement.y or 0)
         x_min = float(replacement.x_min)
         x_max = float(replacement.x_max)
+        font_name = replacement.font_name or "Helvetica"
+        font_size = float(replacement.font_size or 8.0)
+        erase_height = max(font_size + 3, 10)
         overlay.setFillColorRGB(1, 1, 1)
-        overlay.rect(x_min - 2, y - 2, (x_max - x_min) + 4, 10, stroke=0, fill=1)
+        overlay.rect(x_min - 2, y - 2, (x_max - x_min) + 4, erase_height, stroke=0, fill=1)
         overlay.setFillColorRGB(0, 0, 0)
-        overlay.setFont("Helvetica", 8)
+        overlay.setFont(font_name, font_size)
         if replacement.alignment == "right":
             overlay.drawRightString(x_max, y, replacement.new_text)
         else:
@@ -1470,6 +1570,7 @@ def health() -> dict[str, str]:
         "bl_awb_normalization": "carrier-prefix-space-removed",
         "new_template_parsing": "readable-text-with-coordinate-repair",
         "new_template_pdf_generation": "dynamic-money-targets",
+        "overlay_font_matching": "original-fragment-font-and-size",
     }
 
 
