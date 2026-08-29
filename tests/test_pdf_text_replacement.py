@@ -145,6 +145,7 @@ class PdfTextReplacementTests(unittest.TestCase):
         self.assertEqual(reportlab_overlay_font_name(fragment.font), "Courier")
         self.assertEqual(target["font_name"], "Courier")
         self.assertEqual(target["font_size"], 10)
+        self.assertEqual(target["x_max"], 610)
 
     def test_overlay_replacements_use_requested_font(self) -> None:
         with TemporaryDirectory() as temp_dir:

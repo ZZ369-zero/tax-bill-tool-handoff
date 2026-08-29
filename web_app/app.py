@@ -39,7 +39,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.13"
+APP_VERSION = "0.1.14"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 
 
@@ -656,7 +656,7 @@ def inline_amount_target(
         "y": fragment.y,
         "text": amount,
         "x_min": max(0, x_min - left_padding),
-        "x_max": x_max + 2,
+        "x_max": x_max,
         "alignment": "right",
         **style,
     }
@@ -1572,6 +1572,7 @@ def health() -> dict[str, str]:
         "new_template_pdf_generation": "dynamic-money-targets",
         "overlay_font_matching": "original-fragment-font-and-size",
         "pdf_text_fallback": "pymupdf",
+        "overlay_right_edge": "original-text-edge",
     }
 
 
