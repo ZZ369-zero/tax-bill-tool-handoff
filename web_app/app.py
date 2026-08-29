@@ -39,7 +39,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.12"
+APP_VERSION = "0.1.13"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 
 
@@ -1571,6 +1571,7 @@ def health() -> dict[str, str]:
         "new_template_parsing": "readable-text-with-coordinate-repair",
         "new_template_pdf_generation": "dynamic-money-targets",
         "overlay_font_matching": "original-fragment-font-and-size",
+        "pdf_text_fallback": "pymupdf",
     }
 
 

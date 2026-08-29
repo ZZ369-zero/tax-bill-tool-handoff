@@ -261,18 +261,79 @@ def extract_visitor_fragments(reader: PdfReader) -> list[TextFragment]:
     return fragments
 
 
-def extract_fragments(reader: PdfReader) -> list[TextFragment]:
+def extract_pymupdf_text(path: Path) -> str:
+    try:
+        import fitz  # type: ignore[import-not-found]
+    except Exception:
+        return ""
+
+    try:
+        document = fitz.open(path)
+    except Exception:
+        return ""
+    try:
+        return "\n".join(page.get_text("text") or "" for page in document)
+    finally:
+        document.close()
+
+
+def extract_pymupdf_fragments(path: Path) -> list[TextFragment]:
+    try:
+        import fitz  # type: ignore[import-not-found]
+    except Exception:
+        return []
+
+    try:
+        document = fitz.open(path)
+    except Exception:
+        return []
+
+    fragments: list[TextFragment] = []
+    try:
+        for page_index, page in enumerate(document, 1):
+            height = float(page.rect.height)
+            try:
+                text_page = page.get_text("dict")
+            except Exception:
+                continue
+            for block in text_page.get("blocks", []):
+                if block.get("type") != 0:
+                    continue
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        clean = str(span.get("text") or "").replace("\x00", "")
+                        if not clean.strip():
+                            continue
+                        bbox = span.get("bbox") or (0, 0, 0, 0)
+                        fragments.append(
+                            TextFragment(
+                                page=page_index,
+                                x=round(float(bbox[0]), 2),
+                                y=round(height - float(bbox[3]), 2),
+                                size=round(float(span.get("size") or 0), 2),
+                                font=str(span.get("font") or ""),
+                                text=clean,
+                            )
+                        )
+    finally:
+        document.close()
+    return fragments
+
+
+def best_fragment_source(sources: list[list[TextFragment]]) -> list[TextFragment]:
+    populated = [source for source in sources if source]
+    if not populated:
+        return []
+    return max(populated, key=fragment_text_quality_score)
+
+
+def extract_fragments(reader: PdfReader, path: Path | None = None) -> list[TextFragment]:
     content_fragments = extract_content_stream_fragments(reader)
     visitor_fragments = extract_visitor_fragments(reader)
-    if not content_fragments:
-        return visitor_fragments
-    if not visitor_fragments:
-        return content_fragments
-
-    readable_fragments = repair_fragment_coordinates(visitor_fragments, content_fragments)
-    if fragment_text_quality_score(readable_fragments) > fragment_text_quality_score(content_fragments):
-        return readable_fragments
-    return content_fragments
+    pymupdf_fragments = extract_pymupdf_fragments(path) if path else []
+    if content_fragments and visitor_fragments:
+        visitor_fragments = repair_fragment_coordinates(visitor_fragments, content_fragments)
+    return best_fragment_source([content_fragments, visitor_fragments, pymupdf_fragments])
 
 
 def is_zero_position(fragment: TextFragment) -> bool:
@@ -308,8 +369,7 @@ def repair_fragment_coordinates(
     return repaired
 
 
-def fragment_text_quality_score(fragments: list[TextFragment]) -> int:
-    text = "\n".join(fragment.text for fragment in fragments)
+def text_quality_score(text: str) -> int:
     markers = (
         "ENTRY SUMMARY",
         "Filer Code",
@@ -331,8 +391,18 @@ def fragment_text_quality_score(fragments: list[TextFragment]) -> int:
     return marker_score + word_score - control_penalty
 
 
-def extract_text(reader: PdfReader) -> str:
-    return "\n".join(page.extract_text() or "" for page in reader.pages)
+def fragment_text_quality_score(fragments: list[TextFragment]) -> int:
+    return text_quality_score("\n".join(fragment.text for fragment in fragments))
+
+
+def extract_text(reader: PdfReader, path: Path | None = None) -> str:
+    pdf_text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    if path is None:
+        return pdf_text
+    pymupdf_text = extract_pymupdf_text(path)
+    if text_quality_score(pymupdf_text) > text_quality_score(pdf_text):
+        return pymupdf_text
+    return pdf_text
 
 
 def fonts_from_reader(reader: PdfReader) -> list[str]:
@@ -719,7 +789,7 @@ def parse_header_document(
     text: str,
     fragments: list[TextFragment],
 ) -> TaxDocument:
-    fonts = fonts_from_reader(reader)
+    fonts = sorted(set(fonts_from_reader(reader)) | {fragment.font for fragment in fragments if fragment.font})
     page_sizes = page_sizes_from_reader(reader)
     invoice_number, invoice_value, invoice_entered_value = parse_invoice_totals(text)
     coord_total_entered_value = parse_total_entered_value(fragments)
@@ -738,7 +808,7 @@ def parse_header_document(
         source_file=str(path),
         pair_key=key,
         pages=len(reader.pages),
-        has_text_layer=len(text.strip()) > 100,
+        has_text_layer=len(text.strip()) > 100 or fragment_text_quality_score(fragments) > 50,
         fonts=", ".join(fonts),
         page_size=", ".join(sorted(set(page_sizes))),
         entry_number=field_below(fragments, "1. Filer Code/Entry Number", 20, 145),
@@ -1210,8 +1280,8 @@ def parse_main_hts_row(
 
 def parse_pdf(path: Path, file_role: str, key: str) -> ParsedFile:
     reader = PdfReader(str(path))
-    text = extract_text(reader)
-    fragments = extract_fragments(reader)
+    text = extract_text(reader, path)
+    fragments = extract_fragments(reader, path)
     document = parse_header_document(path, file_role, key, reader, text, fragments)
     lines = parse_lines(path, file_role, key, document.entry_number, fragments)
     apply_text_line_fallback(lines, text)
