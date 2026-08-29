@@ -398,6 +398,124 @@ class PdfTextReplacementTests(unittest.TestCase):
         self.assertEqual(footer_replacements["invoice value"].alignment, "right")
         self.assertEqual(footer_replacements["invoice entered value"].alignment, "right")
 
+    def test_missing_line_mpf_target_does_not_block_generation(self) -> None:
+        original_document = SimpleNamespace(
+            pages=1,
+            total_entered_value="5210",
+            mpf_total="33.58",
+            hmf_total=None,
+            total_other_fees="33.58",
+            other_total="33.58",
+            duty_total="2006.95",
+            grand_total="2040.53",
+            invoice_value="5210",
+            invoice_entered_value="5210",
+        )
+        document = SimpleNamespace(
+            total_entered_value="6160",
+            calculated_mpf_total="33.58",
+            calculated_hmf_total=None,
+            calculated_other_total="33.58",
+            calculated_duty_total="2363.20",
+            calculated_grand_total="2396.78",
+            invoice_value="6160",
+            invoice_entered_value="6160",
+        )
+        original_line = SimpleNamespace(
+            page=1,
+            line_no="001",
+            hts="8472.90.9080",
+            gross_weight="1246",
+            gross_unit="",
+            net_quantity="1500",
+            net_unit="NO",
+            entered_value="2550",
+            rate="FREE",
+            duty_amount="0.00",
+            chapter_99_amounts="637.50; 318.75",
+            mpf_amount=None,
+            hmf_amount=None,
+        )
+        line = SimpleNamespace(
+            page=1,
+            line_no="001",
+            hts="8472.90.9080",
+            gross_weight="1246",
+            gross_unit="",
+            net_quantity="1500",
+            net_unit="NO",
+            entered_value="3500",
+            rate="FREE",
+            chapter_99_rates="25.00%; 12.50%",
+            calculated_base_duty="0.00",
+            calculated_mpf_amount="12.12",
+            calculated_hmf_amount=None,
+        )
+        parsed = SimpleNamespace(document=original_document, lines=[original_line])
+
+        with patch("web_app.app.parser.parse_pdf", return_value=parsed), patch(
+            "web_app.app.original_line_targets",
+            return_value={
+                (1, "001"): {
+                    "original": original_line,
+                    "hts_y": 313.34,
+                    "entered_value_target": {
+                        "text": "2550",
+                        "x_min": 327,
+                        "x_max": 383,
+                        "y": 313.34,
+                        "font_name": "Courier",
+                        "font_size": 10,
+                    },
+                    "base_duty_target": {
+                        "text": "0.00",
+                        "x_min": 530,
+                        "x_max": 586,
+                        "y": 313.34,
+                        "font_name": "Courier",
+                        "font_size": 10,
+                    },
+                    "chapter_ys": [301.34, 289.34],
+                    "chapter_targets": [
+                        {
+                            "text": "637.50",
+                            "x_min": 530,
+                            "x_max": 586,
+                            "y": 301.34,
+                            "font_name": "Courier",
+                            "font_size": 10,
+                        },
+                        {
+                            "text": "318.75",
+                            "x_min": 530,
+                            "x_max": 586,
+                            "y": 289.34,
+                            "font_name": "Courier",
+                            "font_size": 10,
+                        },
+                    ],
+                    "chapter_texts": ["637.50", "318.75"],
+                    "mpf_y": None,
+                    "mpf_target": None,
+                    "mpf_text": None,
+                    "hmf_y": None,
+                    "hmf_target": None,
+                    "hmf_text": None,
+                    "line_style": {"font_name": "Courier", "font_size": 10},
+                }
+            },
+        ):
+            replacements = build_pdf_text_replacements(
+                Path("source.pdf"),
+                document,
+                [line],
+                [line_field_key(line, "entered_value")],
+            )
+
+        fields = {replacement.field for replacement in replacements}
+        self.assertNotIn("line 001 MPF", fields)
+        self.assertIn("line 001 entered value", fields)
+
 
 if __name__ == "__main__":
     unittest.main()

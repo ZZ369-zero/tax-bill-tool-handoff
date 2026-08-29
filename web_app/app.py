@@ -39,7 +39,7 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.14"
+APP_VERSION = "0.1.15"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 
 
@@ -1145,43 +1145,47 @@ def build_pdf_text_replacements(
                         **replacement_style(chapter_target, line_style),
                     )
             mpf_target = target.get("mpf_target") or {}
-            old_mpf_text = mpf_target.get("text") or target.get("mpf_text") or format_pdf_money(
-                original_line.mpf_amount
-            )
-            add_replacement(
-                replacements,
-                page=line.page,
-                field=f"line {line.line_no} MPF",
-                old_value=original_line.mpf_amount,
-                new_value=line.calculated_mpf_amount,
-                old_text=old_mpf_text,
-                new_text=format_pdf_money_like_original(line.calculated_mpf_amount, old_mpf_text),
-                x_min=mpf_target.get("x_min", 530),
-                x_max=mpf_target.get("x_max", 590),
-                y=mpf_target.get("y", target.get("mpf_y")),
-                **replacement_style(mpf_target, line_style),
-            )
+            mpf_y = mpf_target.get("y", target.get("mpf_y"))
+            if mpf_target or target.get("mpf_text") or original_line.mpf_amount is not None or mpf_y is not None:
+                old_mpf_text = mpf_target.get("text") or target.get("mpf_text") or format_pdf_money(
+                    original_line.mpf_amount
+                )
+                add_replacement(
+                    replacements,
+                    page=line.page,
+                    field=f"line {line.line_no} MPF",
+                    old_value=original_line.mpf_amount,
+                    new_value=line.calculated_mpf_amount,
+                    old_text=old_mpf_text,
+                    new_text=format_pdf_money_like_original(line.calculated_mpf_amount, old_mpf_text),
+                    x_min=mpf_target.get("x_min", 530),
+                    x_max=mpf_target.get("x_max", 590),
+                    y=mpf_y,
+                    **replacement_style(mpf_target, line_style),
+                )
 
         if (entered_value_changed or transport_changed) and (
             original_line.hmf_amount is not None or line.calculated_hmf_amount is not None
         ):
             hmf_target = target.get("hmf_target") or {}
-            old_hmf_text = hmf_target.get("text") or target.get("hmf_text") or format_pdf_money(
-                original_line.hmf_amount
-            )
-            add_replacement(
-                replacements,
-                page=line.page,
-                field=f"line {line.line_no} HMF",
-                old_value=original_line.hmf_amount,
-                new_value=line.calculated_hmf_amount,
-                old_text=old_hmf_text,
-                new_text=format_pdf_money_like_original(line.calculated_hmf_amount, old_hmf_text),
-                x_min=hmf_target.get("x_min", 530),
-                x_max=hmf_target.get("x_max", 590),
-                y=hmf_target.get("y", target.get("hmf_y")),
-                **replacement_style(hmf_target, line_style),
-            )
+            hmf_y = hmf_target.get("y", target.get("hmf_y"))
+            if hmf_target or target.get("hmf_text") or original_line.hmf_amount is not None or hmf_y is not None:
+                old_hmf_text = hmf_target.get("text") or target.get("hmf_text") or format_pdf_money(
+                    original_line.hmf_amount
+                )
+                add_replacement(
+                    replacements,
+                    page=line.page,
+                    field=f"line {line.line_no} HMF",
+                    old_value=original_line.hmf_amount,
+                    new_value=line.calculated_hmf_amount,
+                    old_text=old_hmf_text,
+                    new_text=format_pdf_money_like_original(line.calculated_hmf_amount, old_hmf_text),
+                    x_min=hmf_target.get("x_min", 530),
+                    x_max=hmf_target.get("x_max", 590),
+                    y=hmf_y,
+                    **replacement_style(hmf_target, line_style),
+                )
 
     if entered_changed_any:
         target = document_targets.get("total_entered_value", {})
@@ -1573,6 +1577,7 @@ def health() -> dict[str, str]:
         "overlay_font_matching": "original-fragment-font-and-size",
         "pdf_text_fallback": "pymupdf",
         "overlay_right_edge": "original-text-edge",
+        "line_fee_missing_target": "skip-line-fee-use-document-summary",
     }
 
 
