@@ -11,6 +11,7 @@ from web_app.app import (
     parsed_has_hmf,
     parser,
     recalculate,
+    suppress_expected_modified_variances,
 )
 
 
@@ -299,6 +300,37 @@ class CbpCalculationTests(unittest.TestCase):
         self.assertEqual(document.calculated_mpf_total, "40.61")
         self.assertEqual(line_mpf_total, Decimal("40.61"))
         self.assertEqual(lines[1].calculated_mpf_amount, "2.37")
+
+    def test_modified_line_variance_is_not_reported_against_original_pdf(self) -> None:
+        document = tax_document()
+        document.duty_total = "2,006.95"
+        document.other_total = "33.58"
+        document.grand_total = "2,040.53"
+        line = tax_line("001", "2850", "FREE", "25%; 12.50%", net_quantity="1500", net_unit="NO")
+        line.duty_amount = "956.25"
+        unchanged_line = tax_line("002", "2660", "2%", "25%; 12.50%", net_quantity="1400", net_unit="NO")
+        unchanged_line.duty_amount = "1,050.70"
+
+        lines = [line, unchanged_line]
+
+        recalculate(document, lines, include_hmf=False)
+        self.assertEqual(line.calculated_duty_total, "1,068.75")
+        self.assertEqual(unchanged_line.calculated_duty_total, "1,050.70")
+        self.assertEqual(line.duty_variance, "-112.50")
+        self.assertEqual(unchanged_line.duty_variance, "0.00")
+        self.assertEqual(document.grand_total_variance, "-112.50")
+
+        suppress_expected_modified_variances(
+            document,
+            lines,
+            {line_field_key(line, "entered_value")},
+        )
+
+        self.assertIsNone(line.duty_variance)
+        self.assertIsNone(line.mpf_variance)
+        self.assertEqual(unchanged_line.duty_variance, "0.00")
+        self.assertIsNone(document.duty_variance)
+        self.assertIsNone(document.grand_total_variance)
 
 
 if __name__ == "__main__":

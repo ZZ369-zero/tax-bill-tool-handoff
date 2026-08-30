@@ -19,6 +19,7 @@ from web_app.app import (
     build_pdf_text_replacements,
     line_field_key,
     overlay_page_replacements,
+    overlay_erase_rectangle,
     quantity_text,
     reportlab_overlay_font_name,
     values_equal,
@@ -184,6 +185,26 @@ class PdfTextReplacementTests(unittest.TestCase):
 
         self.assertEqual(applied, [replacement])
         self.assertIn("/Courier", font_names)
+
+    def test_overlay_erase_rectangle_keeps_right_border_visible(self) -> None:
+        replacement = PdfTextReplacement(
+            page=1,
+            field="line 001 chapter amount",
+            old_text="637.50",
+            new_text="712.50",
+            x_min=530,
+            x_max=586,
+            y=349.34,
+            alignment="right",
+            font_name="Courier",
+            font_size=10,
+        )
+
+        erase_x, _, erase_width, _ = overlay_erase_rectangle(replacement)
+
+        self.assertLess(erase_x, 586)
+        self.assertLess(erase_x + erase_width, 586)
+        self.assertGreaterEqual(586 - (erase_x + erase_width), 0.75)
 
     def test_no_modified_fields_returns_without_reading_pdf(self) -> None:
         replacements = build_pdf_text_replacements(

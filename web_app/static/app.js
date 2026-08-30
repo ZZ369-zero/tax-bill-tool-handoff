@@ -135,18 +135,20 @@ function collectWarnings() {
   if (!state.document.has_text_layer) {
     warnings.push("未检测到稳定文本层");
   }
-  if (state.document.parse_notes) {
-    warnings.push(state.document.parse_notes);
+  for (const note of visibleParseNotes(state.document.parse_notes)) {
+    warnings.push(note);
   }
-  for (const field of ["duty_variance", "other_variance", "grand_total_variance"]) {
-    const value = state.document[field];
-    if (value && Number(value) !== 0) {
-      warnings.push(`${field}: ${value}`);
+  if (!hasCalculationEdits()) {
+    for (const field of ["duty_variance", "other_variance", "grand_total_variance"]) {
+      const value = state.document[field];
+      if (value && Number(value) !== 0) {
+        warnings.push(`${field}: ${value}`);
+      }
     }
   }
   for (const line of state.lines) {
-    if (line.parse_notes) {
-      warnings.push(`Line ${line.line_no}: ${line.parse_notes}`);
+    for (const note of visibleParseNotes(line.parse_notes)) {
+      warnings.push(`Line ${line.line_no}: ${note}`);
     }
     if (line.hts_description) {
       const suggested = String(line.hts_additional_codes || "").split(";").map((item) => item.trim()).filter(Boolean);
@@ -164,6 +166,28 @@ function collectWarnings() {
   return warnings;
 }
 
+const calculationFields = ["hts", "net_quantity", "entered_value", "rate"];
+
+function lineFieldKey(line, field) {
+  return `line:${line.page}:${line.line_no}:${field}`;
+}
+
+function lineHasCalculationEdits(line) {
+  return calculationFields.some((field) => state.modifiedFields.has(lineFieldKey(line, field)));
+}
+
+function hasCalculationEdits() {
+  return state.modifiedFields.has("document:transport_mode") || state.lines.some((line) => lineHasCalculationEdits(line));
+}
+
+function visibleParseNotes(value) {
+  return String(value || "")
+    .split(";")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .filter((item) => item !== "multiple embedded font families");
+}
+
 function renderLines() {
   if (!state.lines.length) {
     els.lineTableBody.innerHTML = '<tr class="empty-row"><td colspan="10">暂无数据</td></tr>';
@@ -172,7 +196,9 @@ function renderLines() {
 
   els.lineTableBody.innerHTML = state.lines
     .map((line, index) => {
-      const variance = line.duty_variance || line.mpf_variance || line.hmf_variance || "0.00";
+      const variance = lineHasCalculationEdits(line)
+        ? "0.00"
+        : line.duty_variance || line.mpf_variance || line.hmf_variance || "0.00";
       const varianceClass = Number(variance) === 0 ? "variance-ok" : "variance-warn";
       const requiredUnits = text(line.required_units || line.net_unit);
       const htsDescription = line.hts_description
@@ -341,12 +367,7 @@ async function recalculate() {
     const response = await fetch("/api/recalculate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        document: state.document,
-        lines: state.lines,
-        include_hmf: state.includeHmf,
-        modified_fields: Array.from(state.modifiedFields),
-      }),
+      body: JSON.stringify(currentPayload()),
     });
     if (!response.ok) {
       throw new Error(await errorText(response));

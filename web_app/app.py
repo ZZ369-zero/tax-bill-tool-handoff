@@ -38,9 +38,11 @@ APP_USERNAME = os.getenv("APP_USERNAME")
 APP_PASSWORD = os.getenv("APP_PASSWORD")
 TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
+PDF_OVERLAY_BORDER_SAFE_GAP = 0.8
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.15"
+APP_VERSION = "0.1.16"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
+LINE_CALCULATION_FIELDS = ("hts", "net_quantity", "entered_value", "rate")
 
 
 def load_parser_module():
@@ -878,14 +880,39 @@ def line_field_key(line: Any, field_name: str) -> str:
     return f"line:{line.page}:{line.line_no}:{field_name}"
 
 
+def line_has_calculation_change(line: Any, modified_fields: list[str] | set[str]) -> bool:
+    modified = set(modified_fields)
+    return any(line_field_key(line, field_name) in modified for field_name in LINE_CALCULATION_FIELDS)
+
+
+def suppress_expected_modified_variances(
+    document: Any,
+    lines: list[Any],
+    modified_fields: list[str] | set[str],
+) -> None:
+    if not modified_fields:
+        return
+
+    has_calculation_change = False
+    for line in lines:
+        if not line_has_calculation_change(line, modified_fields):
+            continue
+        has_calculation_change = True
+        line.duty_variance = None
+        line.mpf_variance = None
+        line.hmf_variance = None
+
+    if has_calculation_change or "document:transport_mode" in set(modified_fields):
+        document.duty_variance = None
+        document.other_variance = None
+        document.grand_total_variance = None
+
+
 def line_validation_errors(lines: list[Any], modified_fields: list[str] | set[str]) -> list[str]:
     modified = set(modified_fields)
     errors: list[str] = []
     for line in lines:
-        calculation_modified = any(
-            line_field_key(line, field_name) in modified
-            for field_name in ("hts", "net_quantity", "entered_value", "rate")
-        )
+        calculation_modified = line_has_calculation_change(line, modified)
         if calculation_modified and line.rate:
             calculated_duty = parser.calculate_duty_for_rate(
                 parser.cbp_entered_value(line.entered_value),
@@ -1494,9 +1521,9 @@ def overlay_page_replacements(page: Any, replacements: list[PdfTextReplacement])
         x_max = float(replacement.x_max)
         font_name = replacement.font_name or "Helvetica"
         font_size = float(replacement.font_size or 8.0)
-        erase_height = max(font_size + 3, 10)
+        erase_x, erase_y, erase_width, erase_height = overlay_erase_rectangle(replacement)
         overlay.setFillColorRGB(1, 1, 1)
-        overlay.rect(x_min - 2, y - 2, (x_max - x_min) + 4, erase_height, stroke=0, fill=1)
+        overlay.rect(erase_x, erase_y, erase_width, erase_height, stroke=0, fill=1)
         overlay.setFillColorRGB(0, 0, 0)
         overlay.setFont(font_name, font_size)
         if replacement.alignment == "right":
@@ -1508,6 +1535,27 @@ def overlay_page_replacements(page: Any, replacements: list[PdfTextReplacement])
     overlay_page = PdfReader(packet).pages[0]
     page.merge_page(overlay_page)
     return drawable
+
+
+def overlay_erase_rectangle(replacement: PdfTextReplacement) -> tuple[float, float, float, float]:
+    font_name = replacement.font_name or "Helvetica"
+    font_size = float(replacement.font_size or 8.0)
+    old_width = pdfmetrics.stringWidth(replacement.old_text, font_name, font_size)
+    new_width = pdfmetrics.stringWidth(replacement.new_text, font_name, font_size)
+    y = float(replacement.y or 0)
+    erase_y = y - max(font_size * 0.22, 1.0)
+    erase_height = max(font_size * 1.12, 8.0)
+
+    if replacement.alignment == "right":
+        right_edge = float(replacement.x_max)
+        widest_text = max(old_width, new_width)
+        erase_x = max(0.0, right_edge - widest_text - 0.8)
+        erase_right = max(erase_x + 1.0, right_edge - PDF_OVERLAY_BORDER_SAFE_GAP)
+        return erase_x, erase_y, erase_right - erase_x, erase_height
+
+    left_edge = float(replacement.x_min)
+    erase_width = max(old_width, new_width) + 1.2
+    return max(0.0, left_edge - 0.6), erase_y, erase_width, erase_height
 
 
 def template_preserving_pdf(
@@ -1578,6 +1626,8 @@ def health() -> dict[str, str]:
         "pdf_text_fallback": "pymupdf",
         "overlay_right_edge": "original-text-edge",
         "line_fee_missing_target": "skip-line-fee-use-document-summary",
+        "overlay_border_safety": "erase-text-only-keep-cell-lines",
+        "variance_warnings": "parse-only-for-unmodified-fields",
     }
 
 
@@ -1681,6 +1731,7 @@ def recalculate_payload(payload: RecalculateRequest) -> dict[str, Any]:
         document.line_count = len(lines)
         recalculate(document, lines, include_hmf=payload.include_hmf)
         validation_errors = line_validation_errors(lines, payload.modified_fields)
+        suppress_expected_modified_variances(document, lines, payload.modified_fields)
         return response_payload(
             document,
             lines,

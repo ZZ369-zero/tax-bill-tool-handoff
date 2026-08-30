@@ -26,6 +26,14 @@ class ExcelUploadUiTests(unittest.TestCase):
         self.assertIn('formData.append("transport_mode"', script)
         self.assertIn("responseFileName(response)", script)
 
+    def test_modified_calculation_variance_warnings_are_hidden(self) -> None:
+        script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function hasCalculationEdits()", script)
+        self.assertIn("function lineHasCalculationEdits(line)", script)
+        self.assertIn('item !== "multiple embedded font families"', script)
+        self.assertIn("!hasCalculationEdits()", script)
+
 
 if __name__ == "__main__":
     unittest.main()
