@@ -20,6 +20,8 @@ from web_app.app import (
     line_field_key,
     overlay_page_replacements,
     overlay_erase_rectangle,
+    PdfRuleSegment,
+    protected_erase_rectangles,
     quantity_text,
     reportlab_overlay_font_name,
     values_equal,
@@ -205,6 +207,29 @@ class PdfTextReplacementTests(unittest.TestCase):
         self.assertLess(erase_x, 586)
         self.assertLess(erase_x + erase_width, 586)
         self.assertGreaterEqual(586 - (erase_x + erase_width), 0.75)
+
+    def test_overlay_erase_rectangle_splits_around_internal_rule_line(self) -> None:
+        replacement = PdfTextReplacement(
+            page=2,
+            field="invoice entered value AS",
+            old_text="5210",
+            new_text="5,510",
+            x_min=293,
+            x_max=325,
+            y=471.34,
+            alignment="right",
+            font_name="Courier",
+            font_size=10,
+        )
+        rectangle = overlay_erase_rectangle(replacement)
+        rule = PdfRuleSegment("vertical", 314.5, 41, 679)
+
+        pieces = protected_erase_rectangles(rectangle, [rule])
+
+        self.assertEqual(len(pieces), 2)
+        for x, _, width, _ in pieces:
+            self.assertFalse(x < rule.position < x + width)
+        self.assertGreaterEqual(pieces[1][0] - (pieces[0][0] + pieces[0][2]), 1.5)
 
     def test_no_modified_fields_returns_without_reading_pdf(self) -> None:
         replacements = build_pdf_text_replacements(

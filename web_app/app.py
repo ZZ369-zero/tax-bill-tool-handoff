@@ -40,7 +40,7 @@ TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 PDF_OVERLAY_BORDER_SAFE_GAP = 0.8
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.16"
+APP_VERSION = "0.1.17"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 LINE_CALCULATION_FIELDS = ("hts", "net_quantity", "entered_value", "rate")
 
@@ -110,6 +110,14 @@ class PdfTextReplacement:
     y_tolerance: float = 0.8
     font_name: str = "Helvetica"
     font_size: float = 8.0
+
+
+@dataclass(frozen=True)
+class PdfRuleSegment:
+    orientation: str
+    position: float
+    start: float
+    end: float
 
 
 def dataclass_from_dict(cls, payload: dict[str, Any]):
@@ -1506,11 +1514,89 @@ def apply_page_replacements(
     return applied
 
 
-def overlay_page_replacements(page: Any, replacements: list[PdfTextReplacement]) -> list[PdfTextReplacement]:
+def page_rule_segments(page: Any, pdf_context: Any) -> list[PdfRuleSegment]:
+    content = ContentStream(page.get_contents(), pdf_context)
+    segments: list[PdfRuleSegment] = []
+    current: tuple[float, float] | None = None
+
+    def add_segment(x1: float, y1: float, x2: float, y2: float) -> None:
+        if abs(x1 - x2) <= 0.01 and abs(y1 - y2) >= 2:
+            segments.append(PdfRuleSegment("vertical", x1, min(y1, y2), max(y1, y2)))
+        elif abs(y1 - y2) <= 0.01 and abs(x1 - x2) >= 2:
+            segments.append(PdfRuleSegment("horizontal", y1, min(x1, x2), max(x1, x2)))
+
+    for operands, operator in content.operations:
+        if operator == b"m" and len(operands) >= 2:
+            current = (float(operands[0]), float(operands[1]))
+            continue
+        if operator == b"l" and current is not None and len(operands) >= 2:
+            end = (float(operands[0]), float(operands[1]))
+            add_segment(current[0], current[1], end[0], end[1])
+            current = end
+            continue
+        if operator == b"re" and len(operands) >= 4:
+            x, y, width, height = (float(item) for item in operands[:4])
+            add_segment(x, y, x + width, y)
+            add_segment(x + width, y, x + width, y + height)
+            add_segment(x + width, y + height, x, y + height)
+            add_segment(x, y + height, x, y)
+
+    return segments
+
+
+def protected_erase_rectangles(
+    rectangle: tuple[float, float, float, float],
+    rule_segments: list[PdfRuleSegment],
+) -> list[tuple[float, float, float, float]]:
+    rectangles = [rectangle]
+    rule_gap = PDF_OVERLAY_BORDER_SAFE_GAP
+
+    for segment in rule_segments:
+        next_rectangles: list[tuple[float, float, float, float]] = []
+        for x, y, width, height in rectangles:
+            x2 = x + width
+            y2 = y + height
+            if segment.orientation == "vertical":
+                crosses_x = x < segment.position < x2
+                overlaps_y = y < segment.end and y2 > segment.start
+                if not crosses_x or not overlaps_y:
+                    next_rectangles.append((x, y, width, height))
+                    continue
+                left_end = max(x, segment.position - rule_gap)
+                right_start = min(x2, segment.position + rule_gap)
+                if left_end - x > 0.1:
+                    next_rectangles.append((x, y, left_end - x, height))
+                if x2 - right_start > 0.1:
+                    next_rectangles.append((right_start, y, x2 - right_start, height))
+                continue
+            if segment.orientation == "horizontal":
+                crosses_y = y < segment.position < y2
+                overlaps_x = x < segment.end and x2 > segment.start
+                if not crosses_y or not overlaps_x:
+                    next_rectangles.append((x, y, width, height))
+                    continue
+                lower_end = max(y, segment.position - rule_gap)
+                upper_start = min(y2, segment.position + rule_gap)
+                if lower_end - y > 0.1:
+                    next_rectangles.append((x, y, width, lower_end - y))
+                if y2 - upper_start > 0.1:
+                    next_rectangles.append((x, upper_start, width, y2 - upper_start))
+                continue
+            next_rectangles.append((x, y, width, height))
+        rectangles = next_rectangles
+    return rectangles
+
+
+def overlay_page_replacements(
+    page: Any,
+    replacements: list[PdfTextReplacement],
+    pdf_context: Any | None = None,
+) -> list[PdfTextReplacement]:
     drawable = [replacement for replacement in replacements if replacement.y is not None]
     if not drawable:
         return []
 
+    rule_segments = page_rule_segments(page, pdf_context) if pdf_context is not None else []
     width = float(page.mediabox.width)
     height = float(page.mediabox.height)
     packet = BytesIO()
@@ -1521,9 +1607,13 @@ def overlay_page_replacements(page: Any, replacements: list[PdfTextReplacement])
         x_max = float(replacement.x_max)
         font_name = replacement.font_name or "Helvetica"
         font_size = float(replacement.font_size or 8.0)
-        erase_x, erase_y, erase_width, erase_height = overlay_erase_rectangle(replacement)
+        erase_rectangle = overlay_erase_rectangle(replacement)
         overlay.setFillColorRGB(1, 1, 1)
-        overlay.rect(erase_x, erase_y, erase_width, erase_height, stroke=0, fill=1)
+        for erase_x, erase_y, erase_width, erase_height in protected_erase_rectangles(
+            erase_rectangle,
+            rule_segments,
+        ):
+            overlay.rect(erase_x, erase_y, erase_width, erase_height, stroke=0, fill=1)
         overlay.setFillColorRGB(0, 0, 0)
         overlay.setFont(font_name, font_size)
         if replacement.alignment == "right":
@@ -1577,7 +1667,7 @@ def template_preserving_pdf(
             applied.extend(page_applied)
             page_missing = [item for item in page_replacements if item not in page_applied]
             if page_missing:
-                applied.extend(overlay_page_replacements(page, page_missing))
+                applied.extend(overlay_page_replacements(page, page_missing, writer))
 
     missing = [item.field for item in replacements if item not in applied]
     if missing:
@@ -1626,7 +1716,7 @@ def health() -> dict[str, str]:
         "pdf_text_fallback": "pymupdf",
         "overlay_right_edge": "original-text-edge",
         "line_fee_missing_target": "skip-line-fee-use-document-summary",
-        "overlay_border_safety": "erase-text-only-keep-cell-lines",
+        "overlay_border_safety": "split-erase-around-original-rule-lines",
         "variance_warnings": "parse-only-for-unmodified-fields",
     }
 
