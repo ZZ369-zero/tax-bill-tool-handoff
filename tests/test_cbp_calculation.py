@@ -121,6 +121,74 @@ class CbpCalculationTests(unittest.TestCase):
         self.assertEqual(line.mpf_amount, "1.30")
         self.assertEqual(line.relationship, "N")
 
+    def test_parses_short_line_template_with_compact_quantity_units(self) -> None:
+        rows = [
+            [
+                parser.TextFragment(page=1, x=23.65, y=403.96, size=7, font="/KSPF1", text="1"),
+                parser.TextFragment(page=1, x=63.69, y=403.96, size=7, font="/KSPF1", text="9903.05.31"),
+                parser.TextFragment(page=1, x=323.66, y=404.40, size=7, font="/KSPF1", text="0"),
+                parser.TextFragment(page=1, x=401.65, y=403.97, size=7, font="/KSPF1", text="12.50%"),
+                parser.TextFragment(page=1, x=503.66, y=403.97, size=7, font="/KSPF1", text="$160.50"),
+            ],
+            [
+                parser.TextFragment(page=1, x=63.69, y=396.60, size=7, font="/KSPF1", text="PRDTS OF CHINA, NOTE 52"),
+            ],
+            [
+                parser.TextFragment(
+                    page=1,
+                    x=63.69,
+                    y=389.25,
+                    size=7,
+                    font="/KSPF1",
+                    text="3924.10.4000           639.74            1200NO,639.74KG",
+                ),
+                parser.TextFragment(page=1, x=323.66, y=389.69, size=7, font="/KSPF1", text="1284"),
+                parser.TextFragment(page=1, x=401.65, y=389.25, size=7, font="/KSPF1", text="3.40%"),
+                parser.TextFragment(page=1, x=503.66, y=389.25, size=7, font="/KSPF1", text="$43.66"),
+            ],
+            [
+                parser.TextFragment(page=1, x=63.69, y=381.89, size=7, font="/KSPF1", text="PLASTIC,TABLE/KITCHENWARE,"),
+            ],
+            [
+                parser.TextFragment(page=1, x=323.66, y=345.55, size=7, font="/KSPF1", text="C 48"),
+            ],
+            [
+                parser.TextFragment(page=1, x=323.66, y=338.19, size=7, font="/KSPF1", text="Not Related"),
+            ],
+            [
+                parser.TextFragment(page=1, x=63.69, y=330.39, size=7, font="/KSPF1", text="     Merchandise Process. Fee"),
+                parser.TextFragment(page=1, x=401.65, y=330.40, size=7, font="/KSPF1", text="0.3464%"),
+                parser.TextFragment(page=1, x=503.66, y=330.40, size=7, font="/KSPF1", text="$4.45"),
+            ],
+        ]
+
+        line = parser.parse_line_rows(
+            Path("short-line-template.pdf"),
+            "original",
+            "case",
+            "02P 00001007",
+            rows[0][0],
+            rows,
+        )
+
+        self.assertEqual(parser.line_number_from_text("1"), "001")
+        self.assertEqual(line.line_no, "001")
+        self.assertEqual(line.hts, "3924.10.4000")
+        self.assertEqual(line.gross_weight, "639.74")
+        self.assertEqual(line.gross_unit, "KG")
+        self.assertEqual(line.net_quantity, "1200")
+        self.assertEqual(line.net_unit, "NO")
+        self.assertEqual(line.entered_value, "1284")
+        self.assertEqual(line.rate, "3.40%")
+        self.assertEqual(line.duty_amount, "43.66")
+        self.assertEqual(line.chapter_99_codes, "9903.05.31")
+        self.assertEqual(line.chapter_99_rates, "12.50%")
+        self.assertEqual(line.chapter_99_amounts, "160.50")
+        self.assertEqual(line.mpf_rate, "0.3464%")
+        self.assertEqual(line.mpf_amount, "4.45")
+        self.assertEqual(line.charges, "48")
+        self.assertEqual(line.relationship, "N")
+
     def test_parses_reporting_unit_with_digit_from_hts_row(self) -> None:
         text = "7007.19.0000 157 KG 39.44 M2 $3,200 5% $160.00"
         row = [

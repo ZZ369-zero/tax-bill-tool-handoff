@@ -40,7 +40,7 @@ TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 PDF_OVERLAY_BORDER_SAFE_GAP = 0.8
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.17"
+APP_VERSION = "0.1.18"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 LINE_CALCULATION_FIELDS = ("hts", "net_quantity", "entered_value", "rate")
 
@@ -570,7 +570,7 @@ def page_line_starts(fragments: list[Any]) -> list[Any]:
         fragment
         for fragment in fragments
         if 20 <= fragment.x <= 55
-        and parser.re.match(r"^\s*\d{3}(?:\s|$)", fragment.text.strip())
+        and parser.line_number_from_text(fragment.text)
         and not fragment.text.strip().startswith("499")
         and fragment.y < parser.page_line_table_top(fragment.page)
         and fragment.y > page_bottoms.get(fragment.page, 40.0)
@@ -733,7 +733,7 @@ def document_replacement_targets(original_path: Path, document: Any) -> dict[str
         x_min=520,
         x_max=595,
         y_min=225,
-        y_max=260,
+        y_max=285,
     )
     if target:
         targets["duty_total"] = target
@@ -743,7 +743,7 @@ def document_replacement_targets(original_path: Path, document: Any) -> dict[str
         x_min=520,
         x_max=595,
         y_min=185,
-        y_max=215,
+        y_max=235,
     )
     if target:
         targets["other_total"] = target
@@ -753,7 +753,7 @@ def document_replacement_targets(original_path: Path, document: Any) -> dict[str
         x_min=520,
         x_max=595,
         y_min=165,
-        y_max=190,
+        y_max=210,
     )
     if target:
         targets["grand_total"] = target
@@ -805,7 +805,7 @@ def original_line_targets(original_path: Path, parsed: Any) -> dict[tuple[int, s
     targets: dict[tuple[int, str], dict[str, Any]] = {}
 
     for index, start in enumerate(starts):
-        line_no = start.text.strip()[:3]
+        line_no = parser.line_number_from_text(start.text) or start.text.strip()[:3]
         original_line = next(
             (line for line in parsed.lines if line.page == start.page and line.line_no == line_no),
             None,
@@ -830,7 +830,7 @@ def original_line_targets(original_path: Path, parsed: Any) -> dict[tuple[int, s
             if original_line.hts and original_line.hts in text:
                 hts_y = row[0].y
                 hts_row = row
-            if "Merchandise Processing Fee" in text:
+            if parser.re.search(r"Merchandise\s+Process(?:ing|\.)?\s*Fee", text, parser.re.I):
                 mpf_y = row[0].y
                 mpf_target = zone_amount_target(row, 500, 590)
             if "Harbor Maintenance Fee" in text:
@@ -844,7 +844,7 @@ def original_line_targets(original_path: Path, parsed: Any) -> dict[tuple[int, s
             if any(code in text for code in chapter_codes):
                 chapter_ys.append(row[0].y)
                 chapter_targets.append(zone_amount_target(row, 500, 590))
-        entered_value_target = zone_amount_target(hts_row, 330, 398) if hts_row else None
+        entered_value_target = zone_amount_target(hts_row, 320, 398) if hts_row else None
         base_duty_target = zone_amount_target(hts_row, 500, 590) if hts_row else None
         line_style = row_text_style(hts_row) or fragment_text_style(start)
         targets[(start.page, line_no)] = {
@@ -1718,6 +1718,7 @@ def health() -> dict[str, str]:
         "line_fee_missing_target": "skip-line-fee-use-document-summary",
         "overlay_border_safety": "split-erase-around-original-rule-lines",
         "variance_warnings": "parse-only-for-unmodified-fields",
+        "short_line_template": "one-to-three-digit-lines-and-compact-quantity-units",
     }
 
 
