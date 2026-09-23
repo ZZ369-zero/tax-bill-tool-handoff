@@ -24,6 +24,7 @@ from web_app.app import (
     protected_erase_rectangles,
     quantity_text,
     reportlab_overlay_font_name,
+    rule_segments_inside_rectangle,
     values_equal,
 )
 
@@ -188,7 +189,7 @@ class PdfTextReplacementTests(unittest.TestCase):
         self.assertEqual(applied, [replacement])
         self.assertIn("/Courier", font_names)
 
-    def test_overlay_erase_rectangle_keeps_right_border_visible(self) -> None:
+    def test_overlay_erase_rectangle_clears_right_edge_and_can_restore_border(self) -> None:
         replacement = PdfTextReplacement(
             page=1,
             field="line 001 chapter amount",
@@ -203,10 +204,14 @@ class PdfTextReplacementTests(unittest.TestCase):
         )
 
         erase_x, _, erase_width, _ = overlay_erase_rectangle(replacement)
+        restored = rule_segments_inside_rectangle(
+            (erase_x, 340, erase_width, 20),
+            [PdfRuleSegment("vertical", 586, 320, 380)],
+        )
 
         self.assertLess(erase_x, 586)
-        self.assertLess(erase_x + erase_width, 586)
-        self.assertGreaterEqual(586 - (erase_x + erase_width), 0.75)
+        self.assertGreater(erase_x + erase_width, 586)
+        self.assertIn(("vertical", 586, 340, 360), restored)
 
     def test_overlay_erase_rectangle_uses_located_left_edge_for_right_aligned_text(self) -> None:
         replacement = PdfTextReplacement(
@@ -225,7 +230,27 @@ class PdfTextReplacementTests(unittest.TestCase):
         erase_x, _, erase_width, _ = overlay_erase_rectangle(replacement)
 
         self.assertLessEqual(erase_x, 474.0)
-        self.assertLess(erase_x + erase_width, 530.66)
+        self.assertGreater(erase_x + erase_width, 530.66)
+
+    def test_overlay_erase_rectangle_uses_explicit_cell_erase_boundary(self) -> None:
+        replacement = PdfTextReplacement(
+            page=1,
+            field="duty total",
+            old_text="$191.20",
+            new_text="$549.00",
+            x_min=522.55,
+            x_max=586.15,
+            y=265.34,
+            alignment="right",
+            font_name="Courier-Bold",
+            font_size=8,
+            erase_x_max=593.5,
+        )
+
+        erase_x, _, erase_width, _ = overlay_erase_rectangle(replacement)
+
+        self.assertLessEqual(erase_x, 523.0)
+        self.assertAlmostEqual(erase_x + erase_width, 593.5)
 
     def test_overlay_erase_rectangle_splits_around_internal_rule_line(self) -> None:
         replacement = PdfTextReplacement(

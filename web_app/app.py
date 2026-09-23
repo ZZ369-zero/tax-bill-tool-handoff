@@ -40,7 +40,7 @@ TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 PDF_OVERLAY_BORDER_SAFE_GAP = 0.8
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.19"
+APP_VERSION = "0.1.20"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 LINE_CALCULATION_FIELDS = ("hts", "net_quantity", "entered_value", "rate")
 
@@ -110,6 +110,8 @@ class PdfTextReplacement:
     y_tolerance: float = 0.8
     font_name: str = "Helvetica"
     font_size: float = 8.0
+    erase_x_min: float | None = None
+    erase_x_max: float | None = None
 
 
 @dataclass(frozen=True)
@@ -475,6 +477,8 @@ def add_replacement(
     alignment: str = "right",
     font_name: str | None = None,
     font_size: float | None = None,
+    erase_x_min: float | None = None,
+    erase_x_max: float | None = None,
 ) -> None:
     if values_equal(old_value, new_value):
         return
@@ -490,6 +494,8 @@ def add_replacement(
             alignment=alignment,
             font_name=font_name or "Helvetica",
             font_size=float(font_size or 8.0),
+            erase_x_min=erase_x_min,
+            erase_x_max=erase_x_max,
         )
     )
 
@@ -1239,6 +1245,7 @@ def build_pdf_text_replacements(
             x_max=target.get("x_max", 260),
             y=target.get("y", 248),
             alignment=target.get("alignment", "left"),
+            erase_x_max=317.0,
             **replacement_style(target),
         )
         target = document_targets.get("mpf_summary", {})
@@ -1270,6 +1277,7 @@ def build_pdf_text_replacements(
             x_min=target.get("x_min", 530),
             x_max=target.get("x_max", 590),
             y=target.get("y", 241.5),
+            erase_x_max=593.5,
             **replacement_style(target),
         )
     if other_changed_any:
@@ -1305,6 +1313,7 @@ def build_pdf_text_replacements(
             x_max=target.get("x_max", 260),
             y=target.get("y", 218),
             alignment=target.get("alignment", "left"),
+            erase_x_max=317.0,
             **replacement_style(target),
         )
         target = document_targets.get("other_total", {})
@@ -1320,6 +1329,7 @@ def build_pdf_text_replacements(
             x_min=target.get("x_min", 530),
             x_max=target.get("x_max", 590),
             y=target.get("y", 197.5),
+            erase_x_max=593.5,
             **replacement_style(target),
         )
     if duty_changed_any or other_changed_any:
@@ -1336,6 +1346,7 @@ def build_pdf_text_replacements(
             x_min=target.get("x_min", 530),
             x_max=target.get("x_max", 590),
             y=target.get("y", 175.5),
+            erase_x_max=593.5,
             **replacement_style(target),
         )
 
@@ -1686,13 +1697,27 @@ def overlay_erase_rectangle(replacement: PdfTextReplacement) -> tuple[float, flo
     if replacement.alignment == "right":
         right_edge = float(replacement.x_max)
         widest_text = max(old_width, new_width)
-        erase_x = max(0.0, min(float(replacement.x_min), right_edge - widest_text - 0.8))
-        erase_right = max(erase_x + 1.0, right_edge - PDF_OVERLAY_BORDER_SAFE_GAP)
+        erase_x = max(
+            0.0,
+            replacement.erase_x_min
+            if replacement.erase_x_min is not None
+            else min(float(replacement.x_min), right_edge - widest_text - 0.8),
+        )
+        erase_right = (
+            replacement.erase_x_max
+            if replacement.erase_x_max is not None
+            else max(erase_x + 1.0, right_edge + max(1.2, font_size * 0.2))
+        )
         return erase_x, erase_y, erase_right - erase_x, erase_height
 
     left_edge = float(replacement.x_min)
-    erase_width = max(old_width, new_width) + 1.2
-    return max(0.0, left_edge - 0.6), erase_y, erase_width, erase_height
+    erase_x = max(0.0, replacement.erase_x_min if replacement.erase_x_min is not None else left_edge - 0.6)
+    erase_right = (
+        replacement.erase_x_max
+        if replacement.erase_x_max is not None
+        else left_edge + max(old_width, new_width) + 1.2
+    )
+    return erase_x, erase_y, erase_right - erase_x, erase_height
 
 
 def template_preserving_pdf(
@@ -1767,6 +1792,7 @@ def health() -> dict[str, str]:
         "variance_warnings": "parse-only-for-unmodified-fields",
         "short_line_template": "one-to-three-digit-lines-and-compact-quantity-units",
         "draft_template_fragment_source": "prefer-source-with-most-line-items",
+        "totals_overlay_erase": "cell-boundary-clear-with-text-position-preserved",
     }
 
 
