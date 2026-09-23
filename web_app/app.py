@@ -40,7 +40,7 @@ TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 PDF_OVERLAY_BORDER_SAFE_GAP = 0.8
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.20"
+APP_VERSION = "0.1.21"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 LINE_CALCULATION_FIELDS = ("hts", "net_quantity", "entered_value", "rate")
 
@@ -1088,7 +1088,7 @@ def build_pdf_text_replacements(
                 old_text=old_quantity_text,
                 new_text=new_quantity_text,
                 x_min=230,
-                x_max=350,
+                x_max=315,
                 y=hts_y,
                 **replacement_style(None, line_style),
             )
@@ -1098,6 +1098,22 @@ def build_pdf_text_replacements(
                 original_line.entered_value,
                 keep_cents=False,
             )
+            entered_value_style = replacement_style(entered_value_target, line_style)
+            entered_value_alignment = entered_value_target.get("alignment", "right")
+            entered_value_x_min = entered_value_target.get("x_min", 350)
+            entered_value_x_max = entered_value_target.get("x_max", 398)
+            entered_value_erase_x_min = None
+            if entered_value_target:
+                char_width = max(float(entered_value_style.get("font_size", 8.0)) * 0.6, 4.5)
+                original_amount_start = float(entered_value_x_max) - len(old_entered_text) * char_width
+                # Draft 7501 templates place Block 36 values just to the right of
+                # the 35/36 divider. The generic right-aligned amount target can
+                # pull longer replacement text across that divider, so keep the
+                # original left edge and start erasing only after the divider.
+                if float(entered_value_x_min) < 320 <= float(entered_value_x_max):
+                    entered_value_alignment = "left"
+                    entered_value_x_min = max(320.5, original_amount_start)
+                    entered_value_erase_x_min = 320.0
             add_replacement(
                 replacements,
                 page=line.page,
@@ -1110,10 +1126,12 @@ def build_pdf_text_replacements(
                     old_entered_text,
                     keep_cents=False,
                 ),
-                x_min=entered_value_target.get("x_min", 350),
-                x_max=entered_value_target.get("x_max", 398),
+                x_min=entered_value_x_min,
+                x_max=entered_value_x_max,
                 y=entered_value_target.get("y", hts_y),
-                **replacement_style(entered_value_target, line_style),
+                alignment=entered_value_alignment,
+                erase_x_min=entered_value_erase_x_min,
+                **entered_value_style,
             )
         if rate_changed:
             add_replacement(
@@ -1245,6 +1263,7 @@ def build_pdf_text_replacements(
             x_max=target.get("x_max", 260),
             y=target.get("y", 248),
             alignment=target.get("alignment", "left"),
+            erase_x_min=176.0,
             erase_x_max=317.0,
             **replacement_style(target),
         )
@@ -1313,6 +1332,7 @@ def build_pdf_text_replacements(
             x_max=target.get("x_max", 260),
             y=target.get("y", 218),
             alignment=target.get("alignment", "left"),
+            erase_x_min=176.0,
             erase_x_max=317.0,
             **replacement_style(target),
         )
@@ -1793,6 +1813,7 @@ def health() -> dict[str, str]:
         "short_line_template": "one-to-three-digit-lines-and-compact-quantity-units",
         "draft_template_fragment_source": "prefer-source-with-most-line-items",
         "totals_overlay_erase": "cell-boundary-clear-with-text-position-preserved",
+        "draft_line_item_overlay": "protect-35-36-divider-and-block39-separator",
     }
 
 

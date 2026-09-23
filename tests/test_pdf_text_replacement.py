@@ -252,6 +252,30 @@ class PdfTextReplacementTests(unittest.TestCase):
         self.assertLessEqual(erase_x, 523.0)
         self.assertAlmostEqual(erase_x + erase_width, 593.5)
 
+    def test_line_entered_value_overlay_keeps_draft_column_divider_visible(self) -> None:
+        replacement = PdfTextReplacement(
+            page=1,
+            field="line 001 entered value",
+            old_text="792",
+            new_text="4,700",
+            x_min=323.66,
+            x_max=337.16,
+            y=394.3,
+            alignment="left",
+            font_name="Courier-Bold",
+            font_size=7,
+            erase_x_min=320.0,
+        )
+
+        erase_x, _, erase_width, _ = overlay_erase_rectangle(replacement)
+        protected = protected_erase_rectangles(
+            (erase_x, 391.85, erase_width, 11.55),
+            [PdfRuleSegment("vertical", 318.0, 320, 430)],
+        )
+
+        self.assertGreaterEqual(erase_x, 320.0)
+        self.assertEqual(protected, [(erase_x, 391.85, erase_width, 11.55)])
+
     def test_overlay_erase_rectangle_splits_around_internal_rule_line(self) -> None:
         replacement = PdfTextReplacement(
             page=2,
