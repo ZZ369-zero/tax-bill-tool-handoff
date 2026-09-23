@@ -40,7 +40,7 @@ TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 PDF_OVERLAY_BORDER_SAFE_GAP = 0.8
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.18"
+APP_VERSION = "0.1.19"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 LINE_CALCULATION_FIELDS = ("hts", "net_quantity", "entered_value", "rate")
 
@@ -699,7 +699,7 @@ def document_replacement_targets(original_path: Path, document: Any) -> dict[str
     if not original_path.exists():
         return {}
     reader = PdfReader(str(original_path))
-    fragments = parser.extract_fragments(reader)
+    fragments = parser.extract_fragments(reader, original_path)
     targets: dict[str, dict[str, Any]] = {}
     target = amount_target_at_box(
         fragments,
@@ -800,7 +800,7 @@ def document_replacement_targets(original_path: Path, document: Any) -> dict[str
 
 def original_line_targets(original_path: Path, parsed: Any) -> dict[tuple[int, str], dict[str, Any]]:
     reader = PdfReader(str(original_path))
-    fragments = parser.extract_fragments(reader)
+    fragments = parser.extract_fragments(reader, original_path)
     starts = page_line_starts(fragments)
     targets: dict[tuple[int, str], dict[str, Any]] = {}
 
@@ -1587,6 +1587,39 @@ def protected_erase_rectangles(
     return rectangles
 
 
+def rule_segments_inside_rectangle(
+    rectangle: tuple[float, float, float, float],
+    rule_segments: list[PdfRuleSegment],
+) -> set[tuple[str, float, float, float]]:
+    x, y, width, height = rectangle
+    x2 = x + width
+    y2 = y + height
+    segments: set[tuple[str, float, float, float]] = set()
+
+    for segment in rule_segments:
+        if segment.orientation == "vertical":
+            crosses_x = x <= segment.position <= x2
+            overlaps_y = y < segment.end and y2 > segment.start
+            if not crosses_x or not overlaps_y:
+                continue
+            start = max(y, segment.start)
+            end = min(y2, segment.end)
+            if end - start > 0.1:
+                segments.add(("vertical", round(segment.position, 3), round(start, 3), round(end, 3)))
+            continue
+        if segment.orientation == "horizontal":
+            crosses_y = y <= segment.position <= y2
+            overlaps_x = x < segment.end and x2 > segment.start
+            if not crosses_y or not overlaps_x:
+                continue
+            start = max(x, segment.start)
+            end = min(x2, segment.end)
+            if end - start > 0.1:
+                segments.add(("horizontal", round(segment.position, 3), round(start, 3), round(end, 3)))
+
+    return segments
+
+
 def overlay_page_replacements(
     page: Any,
     replacements: list[PdfTextReplacement],
@@ -1601,19 +1634,33 @@ def overlay_page_replacements(
     height = float(page.mediabox.height)
     packet = BytesIO()
     overlay = canvas.Canvas(packet, pagesize=(width, height))
-    for replacement in sorted(drawable, key=lambda item: item.x_min, reverse=True):
+    drawable = sorted(drawable, key=lambda item: item.x_min, reverse=True)
+    restore_rule_segments: set[tuple[str, float, float, float]] = set()
+    erase_rectangles: list[tuple[float, float, float, float]] = []
+    for replacement in drawable:
+        erase_rectangle = overlay_erase_rectangle(replacement)
+        erase_rectangles.append(erase_rectangle)
+        restore_rule_segments.update(rule_segments_inside_rectangle(erase_rectangle, rule_segments))
+
+    overlay.setFillColorRGB(1, 1, 1)
+    for erase_rectangle in erase_rectangles:
+        overlay.rect(*erase_rectangle, stroke=0, fill=1)
+
+    if restore_rule_segments:
+        overlay.setStrokeColorRGB(0, 0, 0)
+        overlay.setLineWidth(0.5)
+        for orientation, position, start, end in sorted(restore_rule_segments):
+            if orientation == "vertical":
+                overlay.line(position, start, position, end)
+            else:
+                overlay.line(start, position, end, position)
+
+    for replacement in drawable:
         y = float(replacement.y or 0)
         x_min = float(replacement.x_min)
         x_max = float(replacement.x_max)
         font_name = replacement.font_name or "Helvetica"
         font_size = float(replacement.font_size or 8.0)
-        erase_rectangle = overlay_erase_rectangle(replacement)
-        overlay.setFillColorRGB(1, 1, 1)
-        for erase_x, erase_y, erase_width, erase_height in protected_erase_rectangles(
-            erase_rectangle,
-            rule_segments,
-        ):
-            overlay.rect(erase_x, erase_y, erase_width, erase_height, stroke=0, fill=1)
         overlay.setFillColorRGB(0, 0, 0)
         overlay.setFont(font_name, font_size)
         if replacement.alignment == "right":
@@ -1633,13 +1680,13 @@ def overlay_erase_rectangle(replacement: PdfTextReplacement) -> tuple[float, flo
     old_width = pdfmetrics.stringWidth(replacement.old_text, font_name, font_size)
     new_width = pdfmetrics.stringWidth(replacement.new_text, font_name, font_size)
     y = float(replacement.y or 0)
-    erase_y = y - max(font_size * 0.22, 1.0)
-    erase_height = max(font_size * 1.12, 8.0)
+    erase_y = y - max(font_size * 0.35, 2.0)
+    erase_height = max(font_size * 1.65, font_size + 4.0)
 
     if replacement.alignment == "right":
         right_edge = float(replacement.x_max)
         widest_text = max(old_width, new_width)
-        erase_x = max(0.0, right_edge - widest_text - 0.8)
+        erase_x = max(0.0, min(float(replacement.x_min), right_edge - widest_text - 0.8))
         erase_right = max(erase_x + 1.0, right_edge - PDF_OVERLAY_BORDER_SAFE_GAP)
         return erase_x, erase_y, erase_right - erase_x, erase_height
 
@@ -1719,6 +1766,7 @@ def health() -> dict[str, str]:
         "overlay_border_safety": "split-erase-around-original-rule-lines",
         "variance_warnings": "parse-only-for-unmodified-fields",
         "short_line_template": "one-to-three-digit-lines-and-compact-quantity-units",
+        "draft_template_fragment_source": "prefer-source-with-most-line-items",
     }
 
 

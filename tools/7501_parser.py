@@ -320,11 +320,54 @@ def extract_pymupdf_fragments(path: Path) -> list[TextFragment]:
     return fragments
 
 
+def fragment_line_start_count(fragments: list[TextFragment]) -> int:
+    page_bottoms = {
+        page: page_line_table_bottom(fragments, page)
+        for page in {fragment.page for fragment in fragments}
+    }
+    candidates: set[tuple[int, str]] = set()
+    for fragment in fragments:
+        line_no = line_number_from_text(fragment.text)
+        if not line_no:
+            continue
+        if not (20 <= fragment.x <= 55):
+            continue
+        if fragment.size < 5:
+            continue
+        if fragment.text.strip().startswith("499"):
+            continue
+        if fragment.y >= page_line_table_top(fragment.page):
+            continue
+        if fragment.y <= page_bottoms.get(fragment.page, 40.0):
+            continue
+        candidates.add((fragment.page, line_no))
+    return len(candidates)
+
+
+def fragment_hts_code_count(fragments: list[TextFragment]) -> int:
+    text = "\n".join(fragment.text for fragment in fragments)
+    return len(set(re.findall(r"\b\d{4}\.\d{2}\.\d{4}\b", text)))
+
+
+def fragment_selection_key(fragments: list[TextFragment]) -> tuple[int, int, int, int]:
+    visible_fragments = sum(
+        1
+        for fragment in fragments
+        if fragment.size >= 5 and not is_zero_position(fragment)
+    )
+    return (
+        fragment_line_start_count(fragments),
+        fragment_hts_code_count(fragments),
+        fragment_text_quality_score(fragments),
+        visible_fragments,
+    )
+
+
 def best_fragment_source(sources: list[list[TextFragment]]) -> list[TextFragment]:
     populated = [source for source in sources if source]
     if not populated:
         return []
-    return max(populated, key=fragment_text_quality_score)
+    return max(populated, key=fragment_selection_key)
 
 
 def extract_fragments(reader: PdfReader, path: Path | None = None) -> list[TextFragment]:

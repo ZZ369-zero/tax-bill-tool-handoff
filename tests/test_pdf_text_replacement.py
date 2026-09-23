@@ -208,6 +208,25 @@ class PdfTextReplacementTests(unittest.TestCase):
         self.assertLess(erase_x + erase_width, 586)
         self.assertGreaterEqual(586 - (erase_x + erase_width), 0.75)
 
+    def test_overlay_erase_rectangle_uses_located_left_edge_for_right_aligned_text(self) -> None:
+        replacement = PdfTextReplacement(
+            page=1,
+            field="line 001 chapter amount",
+            old_text="$79.20",
+            new_text="$80.00",
+            x_min=473.66,
+            x_max=530.66,
+            y=408.57,
+            alignment="right",
+            font_name="Courier-Bold",
+            font_size=7,
+        )
+
+        erase_x, _, erase_width, _ = overlay_erase_rectangle(replacement)
+
+        self.assertLessEqual(erase_x, 474.0)
+        self.assertLess(erase_x + erase_width, 530.66)
+
     def test_overlay_erase_rectangle_splits_around_internal_rule_line(self) -> None:
         replacement = PdfTextReplacement(
             page=2,

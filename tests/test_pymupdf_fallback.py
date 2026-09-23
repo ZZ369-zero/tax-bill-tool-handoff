@@ -53,6 +53,76 @@ class PyMuPdfFallbackTests(unittest.TestCase):
 
         self.assertTrue(any("ENTRY SUMMARY" in fragment.text for fragment in fragments))
 
+    def test_extract_fragments_prefers_source_with_complete_line_items(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "sample.pdf"
+            self.make_pdf(source)
+            reader = PdfReader(str(source))
+
+            content_fragments = [
+                parser.TextFragment(page=2, x=23, y=662, size=8, font="Courier", text="2"),
+                parser.TextFragment(
+                    page=2,
+                    x=70,
+                    y=646,
+                    size=8,
+                    font="Courier",
+                    text="8516.79.0000      558.24            1400NO",
+                ),
+            ]
+            visitor_fragments = [
+                parser.TextFragment(page=1, x=2, y=108, size=7, font="Courier", text="1"),
+                parser.TextFragment(
+                    page=1,
+                    x=2,
+                    y=94,
+                    size=7,
+                    font="Courier",
+                    text="3924.10.4000           394.76            1200NO,394.76KG",
+                ),
+                parser.TextFragment(page=1, x=24, y=291, size=8, font="Courier", text="Other Fee Summary"),
+                parser.TextFragment(page=2, x=23, y=662, size=8, font="Courier", text="2"),
+                parser.TextFragment(
+                    page=2,
+                    x=70,
+                    y=646,
+                    size=8,
+                    font="Courier",
+                    text="8516.79.0000      558.24            1400NO",
+                ),
+            ]
+            pymupdf_fragments = [
+                parser.TextFragment(page=1, x=23, y=408, size=7, font="Courier", text="1"),
+                parser.TextFragment(
+                    page=1,
+                    x=63,
+                    y=394,
+                    size=7,
+                    font="Courier",
+                    text="3924.10.4000           394.76            1200NO,394.76KG",
+                ),
+                parser.TextFragment(page=1, x=24, y=291, size=8, font="Courier", text="Other Fee Summary"),
+                parser.TextFragment(page=2, x=23, y=662, size=8, font="Courier", text="2"),
+                parser.TextFragment(
+                    page=2,
+                    x=70,
+                    y=646,
+                    size=8,
+                    font="Courier",
+                    text="8516.79.0000      558.24            1400NO",
+                ),
+            ]
+
+            with patch.object(parser, "extract_content_stream_fragments", return_value=content_fragments), patch.object(
+                parser,
+                "extract_visitor_fragments",
+                return_value=visitor_fragments,
+            ), patch.object(parser, "extract_pymupdf_fragments", return_value=pymupdf_fragments):
+                fragments = parser.extract_fragments(reader, source)
+
+        self.assertIs(fragments, pymupdf_fragments)
+        self.assertEqual(parser.fragment_line_start_count(fragments), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
