@@ -91,6 +91,14 @@ class PdfTextReplacementTests(unittest.TestCase):
         pdf.save()
         path.write_bytes(buffer.getvalue())
 
+    def make_fill_only_rectangle_pdf(self, path: Path) -> None:
+        buffer = BytesIO()
+        pdf = canvas.Canvas(buffer, pagesize=(612, 792))
+        pdf.setFillColorRGB(1, 1, 1)
+        pdf.rect(522.4, 191.54, 71.1, 13.2, stroke=0, fill=1)
+        pdf.save()
+        path.write_bytes(buffer.getvalue())
+
     def text_position(self, path: Path, target: str) -> tuple[float, float]:
         reader = PdfReader(str(path))
         content = ContentStream(reader.pages[0].get_contents(), reader)
@@ -223,7 +231,7 @@ class PdfTextReplacementTests(unittest.TestCase):
 
         self.assertLess(erase_x, 586)
         self.assertGreater(erase_x + erase_width, 586)
-        self.assertIn(("vertical", 586, 340, 360), restored)
+        self.assertIn(("vertical", 586, 340, 360, 1.0), restored)
 
     def test_overlay_erase_rectangle_uses_located_left_edge_for_right_aligned_text(self) -> None:
         replacement = PdfTextReplacement(
@@ -276,7 +284,69 @@ class PdfTextReplacementTests(unittest.TestCase):
                 segments,
             )
 
-        self.assertIn(("horizontal", 191.999, 522.4, 593.5), restored)
+        self.assertIn(("horizontal", 191.999, 522.4, 593.5, 0.72), restored)
+
+    def test_overlay_restores_rule_with_original_line_width(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.pdf"
+            output = Path(temp_dir) / "output.pdf"
+            self.make_translated_rule_pdf(source)
+            writer = PdfWriter(clone_from=str(source))
+            replacement = PdfTextReplacement(
+                page=1,
+                field="grand total",
+                old_text="$224.78",
+                new_text="$285.98",
+                x_min=522.4,
+                x_max=593.5,
+                y=194.34,
+                alignment="right",
+                font_name="Courier-Bold",
+                font_size=8,
+                erase_x_min=522.4,
+                erase_x_max=593.5,
+            )
+
+            overlay_page_replacements(writer.pages[0], [replacement], writer)
+            with output.open("wb") as stream:
+                writer.write(stream)
+
+            reader = PdfReader(str(output))
+            restored_segments = [
+                segment
+                for segment in page_rule_segments(reader.pages[0], reader)
+                if segment.orientation == "horizontal"
+                and abs(segment.position - 191.999) <= 0.001
+                and abs(segment.start - 522.4) <= 0.001
+                and abs(segment.end - 593.5) <= 0.001
+            ]
+
+        self.assertEqual(len(restored_segments), 1)
+        self.assertAlmostEqual(restored_segments[0].line_width, 0.72, places=3)
+
+    def test_page_rule_segments_ignores_fill_only_erase_rectangles(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.pdf"
+            self.make_fill_only_rectangle_pdf(source)
+            reader = PdfReader(str(source))
+
+            segments = page_rule_segments(reader.pages[0], reader)
+
+        self.assertEqual(segments, [])
+
+    def test_rule_restoration_prefers_wider_duplicate_segment(self) -> None:
+        restored = rule_segments_inside_rectangle(
+            (522.4, 190.54, 71.1, 13.2),
+            [
+                PdfRuleSegment("horizontal", 191.999, 317.999, 593.687, 0.5),
+                PdfRuleSegment("horizontal", 191.999, 317.999, 593.687, 0.72),
+            ],
+        )
+
+        self.assertEqual(
+            restored,
+            {("horizontal", 191.999, 522.4, 593.5, 0.72)},
+        )
 
     def test_line_entered_value_overlay_keeps_draft_column_divider_visible(self) -> None:
         replacement = PdfTextReplacement(

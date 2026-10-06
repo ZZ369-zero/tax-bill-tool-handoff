@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import importlib.util
 from io import BytesIO
+import math
 import os
 import secrets
 import shutil
@@ -40,7 +41,7 @@ TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 PDF_OVERLAY_BORDER_SAFE_GAP = 0.8
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.22"
+APP_VERSION = "0.1.23"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 LINE_CALCULATION_FIELDS = ("hts", "net_quantity", "entered_value", "rate")
 
@@ -120,6 +121,7 @@ class PdfRuleSegment:
     position: float
     start: float
     end: float
+    line_width: float = 1.0
 
 
 def dataclass_from_dict(cls, payload: dict[str, Any]):
@@ -1548,9 +1550,14 @@ def apply_page_replacements(
 def page_rule_segments(page: Any, pdf_context: Any) -> list[PdfRuleSegment]:
     content = ContentStream(page.get_contents(), pdf_context)
     segments: list[PdfRuleSegment] = []
-    current: tuple[float, float] | None = None
+    pending_segments: list[PdfRuleSegment] = []
+    current: tuple[float, float, float, float] | None = None
+    subpath_start: tuple[float, float, float, float] | None = None
     ctm = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
-    ctm_stack: list[tuple[float, float, float, float, float, float]] = []
+    line_width = 1.0
+    graphics_stack: list[
+        tuple[tuple[float, float, float, float, float, float], float]
+    ] = []
 
     def multiply_matrix(
         left: tuple[float, float, float, float, float, float],
@@ -1571,18 +1578,62 @@ def page_rule_segments(page: Any, pdf_context: Any) -> list[PdfRuleSegment]:
         a, b, c, d, e, f = ctm
         return a * x + c * y + e, b * x + d * y + f
 
-    def add_segment(x1: float, y1: float, x2: float, y2: float) -> None:
+    def transformed_line_width(x1: float, y1: float, x2: float, y2: float) -> float:
+        dx = x2 - x1
+        dy = y2 - y1
+        source_length = math.hypot(dx, dy)
+        if source_length <= 0.000001:
+            return abs(line_width)
+        tangent_x = dx / source_length
+        tangent_y = dy / source_length
+        a, b, c, d, _, _ = ctm
+        transformed_tangent_length = math.hypot(
+            a * tangent_x + c * tangent_y,
+            b * tangent_x + d * tangent_y,
+        )
+        if transformed_tangent_length <= 0.000001:
+            return abs(line_width)
+        area_scale = abs(a * d - b * c)
+        return abs(line_width) * area_scale / transformed_tangent_length
+
+    def add_segment(
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        segment_line_width: float,
+    ) -> None:
         if abs(x1 - x2) <= 0.01 and abs(y1 - y2) >= 2:
-            segments.append(PdfRuleSegment("vertical", x1, min(y1, y2), max(y1, y2)))
+            pending_segments.append(
+                PdfRuleSegment(
+                    "vertical",
+                    x1,
+                    min(y1, y2),
+                    max(y1, y2),
+                    segment_line_width,
+                )
+            )
         elif abs(y1 - y2) <= 0.01 and abs(x1 - x2) >= 2:
-            segments.append(PdfRuleSegment("horizontal", y1, min(x1, x2), max(x1, x2)))
+            pending_segments.append(
+                PdfRuleSegment(
+                    "horizontal",
+                    y1,
+                    min(x1, x2),
+                    max(x1, x2),
+                    segment_line_width,
+                )
+            )
 
     for operands, operator in content.operations:
         if operator == b"q":
-            ctm_stack.append(ctm)
+            graphics_stack.append((ctm, line_width))
             continue
         if operator == b"Q":
-            ctm = ctm_stack.pop() if ctm_stack else (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+            if graphics_stack:
+                ctm, line_width = graphics_stack.pop()
+            else:
+                ctm = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+                line_width = 1.0
             current = None
             continue
         if operator == b"cm" and len(operands) >= 6:
@@ -1590,13 +1641,44 @@ def page_rule_segments(page: Any, pdf_context: Any) -> list[PdfRuleSegment]:
             ctm = multiply_matrix(ctm, matrix)
             current = None
             continue
+        if operator == b"w" and operands:
+            line_width = float(operands[0])
+            continue
         if operator == b"m" and len(operands) >= 2:
-            current = transform_point(float(operands[0]), float(operands[1]))
+            source_x = float(operands[0])
+            source_y = float(operands[1])
+            transformed_x, transformed_y = transform_point(source_x, source_y)
+            current = (source_x, source_y, transformed_x, transformed_y)
+            subpath_start = current
             continue
         if operator == b"l" and current is not None and len(operands) >= 2:
-            end = transform_point(float(operands[0]), float(operands[1]))
-            add_segment(current[0], current[1], end[0], end[1])
-            current = end
+            end_source_x = float(operands[0])
+            end_source_y = float(operands[1])
+            end_x, end_y = transform_point(end_source_x, end_source_y)
+            segment_line_width = transformed_line_width(
+                current[0],
+                current[1],
+                end_source_x,
+                end_source_y,
+            )
+            add_segment(current[2], current[3], end_x, end_y, segment_line_width)
+            current = (end_source_x, end_source_y, end_x, end_y)
+            continue
+        if operator == b"h" and current is not None and subpath_start is not None:
+            segment_line_width = transformed_line_width(
+                current[0],
+                current[1],
+                subpath_start[0],
+                subpath_start[1],
+            )
+            add_segment(
+                current[2],
+                current[3],
+                subpath_start[2],
+                subpath_start[3],
+                segment_line_width,
+            )
+            current = subpath_start
             continue
         if operator == b"re" and len(operands) >= 4:
             x, y, width, height = (float(item) for item in operands[:4])
@@ -1604,10 +1686,37 @@ def page_rule_segments(page: Any, pdf_context: Any) -> list[PdfRuleSegment]:
             bottom_right = transform_point(x + width, y)
             top_right = transform_point(x + width, y + height)
             top_left = transform_point(x, y + height)
-            add_segment(*bottom_left, *bottom_right)
-            add_segment(*bottom_right, *top_right)
-            add_segment(*top_right, *top_left)
-            add_segment(*top_left, *bottom_left)
+            horizontal_width = transformed_line_width(x, y, x + width, y)
+            vertical_width = transformed_line_width(x + width, y, x + width, y + height)
+            add_segment(*bottom_left, *bottom_right, horizontal_width)
+            add_segment(*bottom_right, *top_right, vertical_width)
+            add_segment(*top_right, *top_left, horizontal_width)
+            add_segment(*top_left, *bottom_left, vertical_width)
+            continue
+        if operator in {b"s", b"b", b"b*"} and current is not None and subpath_start is not None:
+            segment_line_width = transformed_line_width(
+                current[0],
+                current[1],
+                subpath_start[0],
+                subpath_start[1],
+            )
+            add_segment(
+                current[2],
+                current[3],
+                subpath_start[2],
+                subpath_start[3],
+                segment_line_width,
+            )
+        if operator in {b"S", b"s", b"B", b"B*", b"b", b"b*"}:
+            segments.extend(pending_segments)
+            pending_segments.clear()
+            current = None
+            subpath_start = None
+            continue
+        if operator in {b"f", b"F", b"f*", b"n"}:
+            pending_segments.clear()
+            current = None
+            subpath_start = None
 
     return segments
 
@@ -1658,11 +1767,30 @@ def protected_erase_rectangles(
 def rule_segments_inside_rectangle(
     rectangle: tuple[float, float, float, float],
     rule_segments: list[PdfRuleSegment],
-) -> set[tuple[str, float, float, float]]:
+) -> set[tuple[str, float, float, float, float]]:
     x, y, width, height = rectangle
     x2 = x + width
     y2 = y + height
-    segments: set[tuple[str, float, float, float]] = set()
+    segments_by_geometry: dict[tuple[str, float, float, float], float] = {}
+
+    def remember_segment(
+        orientation: str,
+        position: float,
+        start: float,
+        end: float,
+        line_width: float,
+    ) -> None:
+        geometry = (
+            orientation,
+            round(position, 3),
+            round(start, 3),
+            round(end, 3),
+        )
+        rounded_width = round(line_width, 3)
+        segments_by_geometry[geometry] = max(
+            rounded_width,
+            segments_by_geometry.get(geometry, 0.0),
+        )
 
     for segment in rule_segments:
         if segment.orientation == "vertical":
@@ -1673,7 +1801,13 @@ def rule_segments_inside_rectangle(
             start = max(y, segment.start)
             end = min(y2, segment.end)
             if end - start > 0.1:
-                segments.add(("vertical", round(segment.position, 3), round(start, 3), round(end, 3)))
+                remember_segment(
+                    "vertical",
+                    segment.position,
+                    start,
+                    end,
+                    segment.line_width,
+                )
             continue
         if segment.orientation == "horizontal":
             crosses_y = y <= segment.position <= y2
@@ -1683,9 +1817,18 @@ def rule_segments_inside_rectangle(
             start = max(x, segment.start)
             end = min(x2, segment.end)
             if end - start > 0.1:
-                segments.add(("horizontal", round(segment.position, 3), round(start, 3), round(end, 3)))
+                remember_segment(
+                    "horizontal",
+                    segment.position,
+                    start,
+                    end,
+                    segment.line_width,
+                )
 
-    return segments
+    return {
+        (*geometry, line_width)
+        for geometry, line_width in segments_by_geometry.items()
+    }
 
 
 def overlay_page_replacements(
@@ -1703,7 +1846,7 @@ def overlay_page_replacements(
     packet = BytesIO()
     overlay = canvas.Canvas(packet, pagesize=(width, height))
     drawable = sorted(drawable, key=lambda item: item.x_min, reverse=True)
-    restore_rule_segments: set[tuple[str, float, float, float]] = set()
+    restore_rule_segments: set[tuple[str, float, float, float, float]] = set()
     erase_rectangles: list[tuple[float, float, float, float]] = []
     for replacement in drawable:
         erase_rectangle = overlay_erase_rectangle(replacement)
@@ -1716,8 +1859,8 @@ def overlay_page_replacements(
 
     if restore_rule_segments:
         overlay.setStrokeColorRGB(0, 0, 0)
-        overlay.setLineWidth(0.5)
-        for orientation, position, start, end in sorted(restore_rule_segments):
+        for orientation, position, start, end, source_line_width in sorted(restore_rule_segments):
+            overlay.setLineWidth(source_line_width)
             if orientation == "vertical":
                 overlay.line(position, start, position, end)
             else:
@@ -1852,6 +1995,7 @@ def health() -> dict[str, str]:
         "totals_overlay_erase": "cell-boundary-clear-with-text-position-preserved",
         "draft_line_item_overlay": "protect-35-36-divider-and-block39-separator",
         "overlay_rule_transform": "apply-cm-ctm-before-restoring-erased-lines",
+        "overlay_rule_style": "preserve-original-transformed-line-width",
     }
 
 
