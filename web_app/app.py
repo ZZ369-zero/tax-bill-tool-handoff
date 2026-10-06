@@ -19,7 +19,8 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import ArrayObject, ContentStream, FloatObject, TextStringObject
+from pypdf.errors import PdfReadError
+from pypdf.generic import ArrayObject, ContentStream, FloatObject, StreamObject, TextStringObject
 from pydantic import BaseModel, Field
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfgen import canvas
@@ -41,7 +42,7 @@ TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 PDF_OVERLAY_BORDER_SAFE_GAP = 0.8
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.23"
+APP_VERSION = "0.1.24"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 LINE_CALCULATION_FIELDS = ("hts", "net_quantity", "entered_value", "rate")
 
@@ -1264,7 +1265,7 @@ def build_pdf_text_replacements(
             x_min=target.get("x_min", 175),
             x_max=target.get("x_max", 260),
             y=target.get("y", 248),
-            alignment=target.get("alignment", "left"),
+            alignment="left",
             erase_x_min=176.0,
             erase_x_max=317.0,
             **replacement_style(target),
@@ -1333,7 +1334,7 @@ def build_pdf_text_replacements(
             x_min=target.get("x_min", 175),
             x_max=target.get("x_max", 260),
             y=target.get("y", 218),
-            alignment=target.get("alignment", "left"),
+            alignment="left",
             erase_x_min=176.0,
             erase_x_max=317.0,
             **replacement_style(target),
@@ -1438,8 +1439,13 @@ def build_pdf_text_replacements(
     return replacements
 
 
-def page_font_name(page: Any, resource_name: Any) -> str:
-    fonts = (page.get("/Resources") or {}).get("/Font") or {}
+def page_font_name(resource_owner: Any, resource_name: Any) -> str:
+    resources = resource_owner.get("/Resources") or resource_owner
+    try:
+        resources = resources.get_object()
+    except AttributeError:
+        pass
+    fonts = resources.get("/Font") or {}
     try:
         fonts = fonts.get_object()
     except AttributeError:
@@ -1485,65 +1491,325 @@ def apply_page_replacements(
     writer: PdfWriter,
     replacements: list[PdfTextReplacement],
 ) -> list[PdfTextReplacement]:
-    content = ContentStream(page.get_contents(), writer)
     pending = list(replacements)
     applied: list[PdfTextReplacement] = []
-    current_tm: list[Any] | None = None
-    current_font: Any = None
-    current_size = 0.0
 
-    for operands, operator in content.operations:
-        if operator == b"Tf":
-            current_font = operands[0]
-            current_size = float(operands[1])
-            continue
-        if operator == b"Tm":
-            current_tm = operands
-            continue
-        if operator not in (b"Tj", b"TJ") or current_tm is None or not operands:
-            continue
+    identity = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
 
-        x = float(current_tm[4])
-        y = float(current_tm[5])
-        old_text = text_from_pdf_text_operands(operands, operator)
-        current_text = old_text
-        for replacement in pending:
-            y_matches = replacement.y is None or abs(y - replacement.y) <= replacement.y_tolerance
+    def multiply_matrix(
+        left: tuple[float, float, float, float, float, float],
+        right: tuple[float, float, float, float, float, float],
+    ) -> tuple[float, float, float, float, float, float]:
+        a1, b1, c1, d1, e1, f1 = left
+        a2, b2, c2, d2, e2, f2 = right
+        return (
+            a1 * a2 + c1 * b2,
+            b1 * a2 + d1 * b2,
+            a1 * c2 + c1 * d2,
+            b1 * c2 + d1 * d2,
+            a1 * e2 + c1 * f2 + e1,
+            b1 * e2 + d1 * f2 + f1,
+        )
+
+    def transform_point(
+        matrix: tuple[float, float, float, float, float, float],
+        x: float,
+        y: float,
+    ) -> tuple[float, float]:
+        a, b, c, d, e, f = matrix
+        return a * x + c * y + e, b * x + d * y + f
+
+    def object_resources(container: Any, inherited: Any | None) -> Any:
+        resources = container.get("/Resources") or inherited or {}
+        try:
+            return resources.get_object()
+        except AttributeError:
+            return resources
+
+    def object_key(reference: Any, value: Any) -> tuple[Any, ...]:
+        candidate = reference if hasattr(reference, "idnum") else getattr(value, "indirect_reference", None)
+        if candidate is not None and hasattr(candidate, "idnum"):
+            return ("indirect", int(candidate.idnum), int(candidate.generation))
+        return ("direct", id(value))
+
+    def content_for(container: Any, *, is_page: bool) -> ContentStream:
+        source = container.get_contents() if is_page else container
+        return ContentStream(source, writer)
+
+    form_usage_counts: dict[tuple[Any, ...], int] = {}
+
+    def collect_form_usage(
+        container: Any,
+        inherited_resources: Any | None,
+        *,
+        is_page: bool,
+        path: frozenset[tuple[Any, ...]],
+    ) -> None:
+        try:
+            content = content_for(container, is_page=is_page)
+        except Exception:
+            return
+        resources = object_resources(container, inherited_resources)
+        xobjects = resources.get("/XObject") or {}
+        try:
+            xobjects = xobjects.get_object()
+        except AttributeError:
+            pass
+        for operands, operator in content.operations:
+            if operator != b"Do" or not operands:
+                continue
+            reference = xobjects.get(operands[0])
+            if reference is None:
+                continue
+            value = reference.get_object()
+            if value.get("/Subtype") != "/Form":
+                continue
+            key = object_key(reference, value)
+            form_usage_counts[key] = form_usage_counts.get(key, 0) + 1
+            if key in path:
+                continue
+            collect_form_usage(
+                value,
+                resources,
+                is_page=False,
+                path=path | {key},
+            )
+
+    for candidate_page in writer.pages:
+        collect_form_usage(
+            candidate_page,
+            None,
+            is_page=True,
+            path=frozenset(),
+        )
+
+    def expand_form_bbox(
+        container: Any,
+        content: ContentStream,
+        text_matrix: list[Any],
+        text_width: float,
+    ) -> None:
+        bbox = container.get("/BBox")
+        if bbox is None:
+            return
+        try:
+            bbox = bbox.get_object()
+        except AttributeError:
+            pass
+        if len(bbox) < 4:
+            return
+        origin_x = float(text_matrix[4])
+        end_x = origin_x + float(text_matrix[0]) * text_width
+        required_left = min(origin_x, end_x) - 0.5
+        required_right = max(origin_x, end_x) + 0.5
+        old_left = float(bbox[0])
+        old_bottom = float(bbox[1])
+        old_right = float(bbox[2])
+        old_top = float(bbox[3])
+        new_left = min(old_left, required_left)
+        new_right = max(old_right, required_right)
+        if new_left == old_left and new_right == old_right:
+            return
+
+        # These templates place an explicit clipping rectangle inside each
+        # Form XObject in addition to /BBox. Expand both boundaries together;
+        # otherwise a longer in-place value would have its leading glyphs
+        # clipped even though the Form /BBox itself was widened.
+        for operands, operator in content.operations:
+            if operator != b"re" or len(operands) < 4:
+                continue
+            clip_left = float(operands[0])
+            clip_bottom = float(operands[1])
+            clip_right = clip_left + float(operands[2])
+            clip_top = clip_bottom + float(operands[3])
             if (
-                current_text != replacement.old_text
-                or not replacement.x_min - PDF_COORDINATE_TOLERANCE <= x <= replacement.x_max + PDF_COORDINATE_TOLERANCE
-                or not y_matches
+                abs(clip_left - old_left) <= 0.01
+                and abs(clip_bottom - old_bottom) <= 0.01
+                and abs(clip_right - old_right) <= 0.01
+                and abs(clip_top - old_top) <= 0.01
+            ):
+                operands[0] = FloatObject(new_left)
+                operands[2] = FloatObject(new_right - new_left)
+        bbox[0] = FloatObject(new_left)
+        bbox[2] = FloatObject(new_right)
+
+    def process_container(
+        container: Any,
+        inherited_resources: Any | None,
+        outer_ctm: tuple[float, float, float, float, float, float],
+        *,
+        is_page: bool,
+        allow_replacements: bool,
+    ) -> None:
+        if not pending:
+            return
+        content = content_for(container, is_page=is_page)
+        resources = object_resources(container, inherited_resources)
+        xobjects = resources.get("/XObject") or {}
+        try:
+            xobjects = xobjects.get_object()
+        except AttributeError:
+            pass
+        current_ctm = outer_ctm
+        ctm_stack: list[tuple[float, float, float, float, float, float]] = []
+        current_tm: list[Any] | None = None
+        current_font: Any = None
+        current_size = 0.0
+        stream_changed = False
+
+        for operands, operator in content.operations:
+            if operator == b"q":
+                ctm_stack.append(current_ctm)
+                continue
+            if operator == b"Q":
+                current_ctm = ctm_stack.pop() if ctm_stack else outer_ctm
+                continue
+            if operator == b"cm" and len(operands) >= 6:
+                matrix = tuple(float(item) for item in operands[:6])
+                current_ctm = multiply_matrix(current_ctm, matrix)
+                continue
+            if operator == b"Do" and operands:
+                reference = xobjects.get(operands[0])
+                if reference is None:
+                    continue
+                value = reference.get_object()
+                if value.get("/Subtype") != "/Form":
+                    continue
+                matrix_value = value.get("/Matrix") or identity
+                form_matrix = tuple(float(item) for item in matrix_value[:6])
+                key = object_key(reference, value)
+                process_container(
+                    value,
+                    resources,
+                    multiply_matrix(current_ctm, form_matrix),
+                    is_page=False,
+                    allow_replacements=(
+                        allow_replacements and form_usage_counts.get(key, 0) == 1
+                    ),
+                )
+                continue
+            if operator == b"Tf":
+                current_font = operands[0]
+                current_size = float(operands[1])
+                continue
+            if operator == b"Tm":
+                current_tm = operands
+                continue
+            if operator == b"BT":
+                current_tm = None
+                continue
+            if operator == b"ET":
+                current_tm = None
+                continue
+            if (
+                not allow_replacements
+                or operator not in (b"Tj", b"TJ")
+                or current_tm is None
+                or not operands
             ):
                 continue
-            if replacement.alignment == "right":
-                font_name = page_font_name(page, current_font)
-                right_edge = x + pdfmetrics.stringWidth(current_text, font_name, current_size)
-                new_width = pdfmetrics.stringWidth(replacement.new_text, font_name, current_size)
-                current_tm[4] = FloatObject(right_edge - new_width)
-            set_pdf_text_operands(operands, operator, replacement.new_text)
-            pending.remove(replacement)
-            applied.append(replacement)
-            break
-        else:
-            row_applied: list[PdfTextReplacement] = []
+
+            x, baseline_y = transform_point(
+                current_ctm,
+                float(current_tm[4]),
+                float(current_tm[5]),
+            )
+            current_text = text_from_pdf_text_operands(operands, operator)
+            y_tolerance = max(PDF_COORDINATE_TOLERANCE, current_size * 0.55)
             for replacement in list(pending):
-                y_matches = replacement.y is not None and abs(y - replacement.y) <= replacement.y_tolerance
+                y_matches = replacement.y is None or abs(baseline_y - replacement.y) <= max(
+                    replacement.y_tolerance,
+                    y_tolerance,
+                )
                 if (
-                    not replacement.field.startswith("line ")
+                    current_text != replacement.old_text
+                    or not replacement.x_min - PDF_COORDINATE_TOLERANCE
+                    <= x
+                    <= replacement.x_max + PDF_COORDINATE_TOLERANCE
                     or not y_matches
-                    or replacement.old_text not in current_text
-                    or not parser.re.match(r"^\s*\d{4}\.\d{2}\.\d{4}", current_text)
                 ):
                     continue
-                current_text = current_text.replace(replacement.old_text, replacement.new_text, 1)
+                font_name = page_font_name(resources, current_font)
+                if replacement.alignment == "right":
+                    old_width = pdfmetrics.stringWidth(current_text, font_name, current_size)
+                    new_width = pdfmetrics.stringWidth(replacement.new_text, font_name, current_size)
+                    width_delta = old_width - new_width
+                    current_tm[4] = FloatObject(
+                        float(current_tm[4]) + float(current_tm[0]) * width_delta
+                    )
+                    current_tm[5] = FloatObject(
+                        float(current_tm[5]) + float(current_tm[1]) * width_delta
+                    )
+                set_pdf_text_operands(operands, operator, replacement.new_text)
+                if not is_page:
+                    new_width = pdfmetrics.stringWidth(
+                        replacement.new_text,
+                        font_name,
+                        current_size,
+                    )
+                    expand_form_bbox(container, content, current_tm, new_width)
                 pending.remove(replacement)
-                row_applied.append(replacement)
-            if row_applied:
-                set_pdf_text_operands(operands, operator, current_text)
-                applied.extend(row_applied)
+                applied.append(replacement)
+                stream_changed = True
+                break
+            else:
+                row_applied: list[PdfTextReplacement] = []
+                for replacement in list(pending):
+                    y_matches = replacement.y is not None and abs(
+                        baseline_y - replacement.y
+                    ) <= max(replacement.y_tolerance, y_tolerance)
+                    if (
+                        not replacement.field.startswith("line ")
+                        or not y_matches
+                        or replacement.old_text not in current_text
+                        or not parser.re.match(r"^\s*\d{4}\.\d{2}\.\d{4}", current_text)
+                    ):
+                        continue
+                    current_text = current_text.replace(
+                        replacement.old_text,
+                        replacement.new_text,
+                        1,
+                    )
+                    pending.remove(replacement)
+                    row_applied.append(replacement)
+                if row_applied:
+                    set_pdf_text_operands(operands, operator, current_text)
+                    if not is_page:
+                        font_name = page_font_name(resources, current_font)
+                        expand_form_bbox(
+                            container,
+                            content,
+                            current_tm,
+                            pdfmetrics.stringWidth(current_text, font_name, current_size),
+                        )
+                    applied.extend(row_applied)
+                    stream_changed = True
 
-    if applied:
-        page.replace_contents(content)
+        if not stream_changed:
+            return
+        if is_page:
+            container.replace_contents(content)
+        else:
+            updated_data = content.get_data()
+            try:
+                container.set_data(updated_data)
+            except PdfReadError:
+                # Some generators combine ASCII85 and Flate filters. pypdf
+                # cannot re-encode that filter chain via set_data(), so store
+                # the already-decoded replacement stream without filters.
+                container.pop("/Filter", None)
+                container.pop("/DecodeParms", None)
+                if hasattr(container, "decoded_self"):
+                    container.decoded_self = None
+                StreamObject.set_data(container, updated_data)
+
+    process_container(
+        page,
+        None,
+        identity,
+        is_page=True,
+        allow_replacements=True,
+    )
     return applied
 
 
@@ -1937,9 +2203,6 @@ def template_preserving_pdf(
         if page_replacements:
             page_applied = apply_page_replacements(page, writer, page_replacements)
             applied.extend(page_applied)
-            page_missing = [item for item in page_replacements if item not in page_applied]
-            if page_missing:
-                applied.extend(overlay_page_replacements(page, page_missing, writer))
 
     missing = [item.field for item in replacements if item not in applied]
     if missing:
@@ -1996,6 +2259,8 @@ def health() -> dict[str, str]:
         "draft_line_item_overlay": "protect-35-36-divider-and-block39-separator",
         "overlay_rule_transform": "apply-cm-ctm-before-restoring-erased-lines",
         "overlay_rule_style": "preserve-original-transformed-line-width",
+        "pdf_text_update": "in-place-page-and-form-xobject-only",
+        "pdf_overlay_fallback": "disabled-for-generation",
     }
 
 

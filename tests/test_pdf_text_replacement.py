@@ -26,6 +26,8 @@ from web_app.app import (
     quantity_text,
     reportlab_overlay_font_name,
     rule_segments_inside_rectangle,
+    template_preserving_pdf,
+    text_from_pdf_text_operands,
     values_equal,
 )
 
@@ -96,6 +98,20 @@ class PdfTextReplacementTests(unittest.TestCase):
         pdf = canvas.Canvas(buffer, pagesize=(612, 792))
         pdf.setFillColorRGB(1, 1, 1)
         pdf.rect(522.4, 191.54, 71.1, 13.2, stroke=0, fill=1)
+        pdf.save()
+        path.write_bytes(buffer.getvalue())
+
+    def make_form_xobject_amount_pdf(self, path: Path) -> None:
+        buffer = BytesIO()
+        pdf = canvas.Canvas(buffer, pagesize=(612, 792))
+        pdf.beginForm("amount", 0, 0, 84, 12)
+        pdf.setFont("Courier-Bold", 8)
+        pdf.drawRightString(82, 3.48, "$224.78")
+        pdf.endForm()
+        pdf.saveState()
+        pdf.translate(504, 193)
+        pdf.doForm("amount")
+        pdf.restoreState()
         pdf.save()
         path.write_bytes(buffer.getvalue())
 
@@ -323,6 +339,87 @@ class PdfTextReplacementTests(unittest.TestCase):
 
         self.assertEqual(len(restored_segments), 1)
         self.assertAlmostEqual(restored_segments[0].line_width, 0.72, places=3)
+
+    def test_replaces_text_inside_translated_form_xobject_in_place(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.pdf"
+            output = Path(temp_dir) / "output.pdf"
+            self.make_form_xobject_amount_pdf(source)
+            writer = PdfWriter(clone_from=str(source))
+            replacement = PdfTextReplacement(
+                page=1,
+                field="grand total",
+                old_text="$224.78",
+                new_text="$285.98",
+                x_min=522.4,
+                x_max=586.0,
+                y=193.34,
+                alignment="right",
+                font_name="Courier-Bold",
+                font_size=8,
+            )
+
+            applied = apply_page_replacements(writer.pages[0], writer, [replacement])
+            with output.open("wb") as stream:
+                writer.write(stream)
+
+            reader = PdfReader(str(output))
+            page = reader.pages[0]
+            main_content = ContentStream(page.get_contents(), reader)
+            main_text = "".join(
+                text_from_pdf_text_operands(operands, operator)
+                for operands, operator in main_content.operations
+                if operator in (b"Tj", b"TJ")
+            )
+            form_texts: list[str] = []
+            xobjects = (page.get("/Resources") or {}).get("/XObject") or {}
+            xobjects = xobjects.get_object()
+            for reference in xobjects.values():
+                value = reference.get_object()
+                if value.get("/Subtype") != "/Form":
+                    continue
+                form_content = ContentStream(value, reader)
+                form_texts.extend(
+                    text_from_pdf_text_operands(operands, operator)
+                    for operands, operator in form_content.operations
+                    if operator in (b"Tj", b"TJ")
+                )
+
+        self.assertEqual(applied, [replacement])
+        self.assertNotIn("$224.78", form_texts)
+        self.assertEqual(form_texts.count("$285.98"), 1)
+        self.assertNotIn("$285.98", main_text)
+
+    def test_template_generation_does_not_fall_back_to_overlay(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.pdf"
+            self.make_pdf(source)
+            replacement = PdfTextReplacement(
+                page=1,
+                field="missing total",
+                old_text="$999.99",
+                new_text="$1.00",
+                x_min=500,
+                x_max=590,
+                y=500,
+            )
+
+            with patch(
+                "web_app.app.build_pdf_text_replacements",
+                return_value=[replacement],
+            ), patch("web_app.app.overlay_page_replacements") as overlay:
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "could not be matched exactly",
+                ):
+                    template_preserving_pdf(
+                        source,
+                        document=None,
+                        lines=[],
+                        modified_fields=["document:test"],
+                    )
+
+        overlay.assert_not_called()
 
     def test_page_rule_segments_ignores_fill_only_erase_rectangles(self) -> None:
         with TemporaryDirectory() as temp_dir:
