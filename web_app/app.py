@@ -40,7 +40,7 @@ TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 PDF_OVERLAY_BORDER_SAFE_GAP = 0.8
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.21"
+APP_VERSION = "0.1.22"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 LINE_CALCULATION_FIELDS = ("hts", "net_quantity", "entered_value", "rate")
 
@@ -1549,6 +1549,27 @@ def page_rule_segments(page: Any, pdf_context: Any) -> list[PdfRuleSegment]:
     content = ContentStream(page.get_contents(), pdf_context)
     segments: list[PdfRuleSegment] = []
     current: tuple[float, float] | None = None
+    ctm = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    ctm_stack: list[tuple[float, float, float, float, float, float]] = []
+
+    def multiply_matrix(
+        left: tuple[float, float, float, float, float, float],
+        right: tuple[float, float, float, float, float, float],
+    ) -> tuple[float, float, float, float, float, float]:
+        a1, b1, c1, d1, e1, f1 = left
+        a2, b2, c2, d2, e2, f2 = right
+        return (
+            a1 * a2 + c1 * b2,
+            b1 * a2 + d1 * b2,
+            a1 * c2 + c1 * d2,
+            b1 * c2 + d1 * d2,
+            a1 * e2 + c1 * f2 + e1,
+            b1 * e2 + d1 * f2 + f1,
+        )
+
+    def transform_point(x: float, y: float) -> tuple[float, float]:
+        a, b, c, d, e, f = ctm
+        return a * x + c * y + e, b * x + d * y + f
 
     def add_segment(x1: float, y1: float, x2: float, y2: float) -> None:
         if abs(x1 - x2) <= 0.01 and abs(y1 - y2) >= 2:
@@ -1557,20 +1578,36 @@ def page_rule_segments(page: Any, pdf_context: Any) -> list[PdfRuleSegment]:
             segments.append(PdfRuleSegment("horizontal", y1, min(x1, x2), max(x1, x2)))
 
     for operands, operator in content.operations:
+        if operator == b"q":
+            ctm_stack.append(ctm)
+            continue
+        if operator == b"Q":
+            ctm = ctm_stack.pop() if ctm_stack else (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+            current = None
+            continue
+        if operator == b"cm" and len(operands) >= 6:
+            matrix = tuple(float(item) for item in operands[:6])
+            ctm = multiply_matrix(ctm, matrix)
+            current = None
+            continue
         if operator == b"m" and len(operands) >= 2:
-            current = (float(operands[0]), float(operands[1]))
+            current = transform_point(float(operands[0]), float(operands[1]))
             continue
         if operator == b"l" and current is not None and len(operands) >= 2:
-            end = (float(operands[0]), float(operands[1]))
+            end = transform_point(float(operands[0]), float(operands[1]))
             add_segment(current[0], current[1], end[0], end[1])
             current = end
             continue
         if operator == b"re" and len(operands) >= 4:
             x, y, width, height = (float(item) for item in operands[:4])
-            add_segment(x, y, x + width, y)
-            add_segment(x + width, y, x + width, y + height)
-            add_segment(x + width, y + height, x, y + height)
-            add_segment(x, y + height, x, y)
+            bottom_left = transform_point(x, y)
+            bottom_right = transform_point(x + width, y)
+            top_right = transform_point(x + width, y + height)
+            top_left = transform_point(x, y + height)
+            add_segment(*bottom_left, *bottom_right)
+            add_segment(*bottom_right, *top_right)
+            add_segment(*top_right, *top_left)
+            add_segment(*top_left, *bottom_left)
 
     return segments
 
@@ -1814,6 +1851,7 @@ def health() -> dict[str, str]:
         "draft_template_fragment_source": "prefer-source-with-most-line-items",
         "totals_overlay_erase": "cell-boundary-clear-with-text-position-preserved",
         "draft_line_item_overlay": "protect-35-36-divider-and-block39-separator",
+        "overlay_rule_transform": "apply-cm-ctm-before-restoring-erased-lines",
     }
 
 

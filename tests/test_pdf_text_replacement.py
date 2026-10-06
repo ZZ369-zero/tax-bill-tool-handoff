@@ -20,6 +20,7 @@ from web_app.app import (
     line_field_key,
     overlay_page_replacements,
     overlay_erase_rectangle,
+    page_rule_segments,
     PdfRuleSegment,
     protected_erase_rectangles,
     quantity_text,
@@ -76,6 +77,17 @@ class PdfTextReplacementTests(unittest.TestCase):
         pdf = canvas.Canvas(buffer, pagesize=(612, 792))
         pdf.setFont("Helvetica", 9)
         pdf.drawString(253.47, 436.33, "9,334.00 USD")
+        pdf.save()
+        path.write_bytes(buffer.getvalue())
+
+    def make_translated_rule_pdf(self, path: Path) -> None:
+        buffer = BytesIO()
+        pdf = canvas.Canvas(buffer, pagesize=(612, 792))
+        pdf.saveState()
+        pdf.translate(317.998, 191.999)
+        pdf.setLineWidth(0.72)
+        pdf.line(0, 0, 275.689, 0)
+        pdf.restoreState()
         pdf.save()
         path.write_bytes(buffer.getvalue())
 
@@ -251,6 +263,20 @@ class PdfTextReplacementTests(unittest.TestCase):
 
         self.assertLessEqual(erase_x, 523.0)
         self.assertAlmostEqual(erase_x + erase_width, 593.5)
+
+    def test_page_rule_segments_apply_translated_rule_coordinates(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.pdf"
+            self.make_translated_rule_pdf(source)
+            reader = PdfReader(str(source))
+
+            segments = page_rule_segments(reader.pages[0], reader)
+            restored = rule_segments_inside_rectangle(
+                (522.4, 190.54, 71.1, 13.2),
+                segments,
+            )
+
+        self.assertIn(("horizontal", 191.999, 522.4, 593.5), restored)
 
     def test_line_entered_value_overlay_keeps_draft_column_divider_visible(self) -> None:
         replacement = PdfTextReplacement(
