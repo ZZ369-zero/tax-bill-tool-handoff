@@ -42,7 +42,7 @@ TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 PDF_OVERLAY_BORDER_SAFE_GAP = 0.8
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.24"
+APP_VERSION = "0.1.25"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 LINE_CALCULATION_FIELDS = ("hts", "net_quantity", "entered_value", "rate")
 
@@ -402,6 +402,27 @@ def format_pdf_money_like_original(
     return f"${number}" if "$" in display(original_text) else number
 
 
+def format_pdf_number_like_original(
+    value: Any,
+    original_text: Any,
+    *,
+    default_decimals: int = 2,
+) -> str:
+    decimal_value = parser.parse_decimal(value)
+    if decimal_value is None:
+        return display(value)
+    tokens = list(parser.re.finditer(r"[0-9][0-9,]*(?:\.\d+)?", display(original_text)))
+    original_number = tokens[-1].group(0) if tokens else ""
+    decimals = (
+        len(original_number.rsplit(".", 1)[1])
+        if "." in original_number
+        else default_decimals
+    )
+    grouped = "," in original_number
+    format_spec = f",.{decimals}f" if grouped else f".{decimals}f"
+    return format(decimal_value, format_spec)
+
+
 def values_equal(left: Any, right: Any) -> bool:
     left_decimal = parser.parse_decimal(left)
     right_decimal = parser.parse_decimal(right)
@@ -602,6 +623,21 @@ def amount_target_for_fragment(fragment: Any, amount: str) -> dict[str, Any]:
     return inline_amount_target(fragment, styled_amount)
 
 
+def matching_amount_token(text: Any, value: Any) -> str | None:
+    expected = parser.parse_decimal(value)
+    if expected is None:
+        return None
+    matches = [
+        match.group(0)
+        for match in parser.re.finditer(
+            r"(?<![0-9.])[0-9][0-9,]*(?:\.\d+)?(?![0-9.])",
+            display(text),
+        )
+        if parser.parse_decimal(match.group(0)) == expected
+    ]
+    return matches[-1] if matches else None
+
+
 def zone_amount_target(row: list[Any], x_min: float, x_max: float) -> dict[str, Any] | None:
     fragments = [fragment for fragment in row if x_min <= fragment.x <= x_max]
     for fragment in sorted(fragments, key=lambda f: f.x, reverse=True):
@@ -646,7 +682,7 @@ def amount_target_at_box(
         if fragment.page != page or not (x_min <= fragment.x <= x_max) or not (y_min <= fragment.y <= y_max):
             continue
         text = display(fragment.text)
-        amount = parser.money_after_dollar(text, last=True) or parser.parse_last_money(text)
+        amount = matching_amount_token(text, value)
         if amount and parser.parse_decimal(amount) == expected:
             target = amount_target_for_fragment(fragment, amount)
             target["y"] = fragment.y
@@ -696,7 +732,7 @@ def fee_summary_target(
         text = display(fragment.text)
         if fragment.page != 1 or fee_code not in text or not dotted_label.search(text):
             continue
-        amount = parser.money_after_dollar(text, last=True) or parser.parse_last_money(text)
+        amount = matching_amount_token(text, value)
         if amount and parser.parse_decimal(amount) == expected:
             target = amount_target_for_fragment(fragment, amount)
             target["y"] = fragment.y
@@ -1330,7 +1366,13 @@ def build_pdf_text_replacements(
                 "text",
                 format_pdf_number(original_document.total_other_fees or original_document.other_total),
             ),
-            new_text=format_pdf_number(document.calculated_other_total),
+            new_text=format_pdf_number_like_original(
+                document.calculated_other_total,
+                target.get(
+                    "text",
+                    format_pdf_number(original_document.total_other_fees or original_document.other_total),
+                ),
+            ),
             x_min=target.get("x_min", 175),
             x_max=target.get("x_max", 260),
             y=target.get("y", 218),
@@ -1633,6 +1675,158 @@ def apply_page_replacements(
         bbox[0] = FloatObject(new_left)
         bbox[2] = FloatObject(new_right)
 
+    def inline_span_matches(
+        current_text: str,
+        start: int,
+        end: int,
+        current_tm: list[Any],
+        current_ctm: tuple[float, float, float, float, float, float],
+        font_name: str,
+        font_size: float,
+        replacement: PdfTextReplacement,
+    ) -> bool:
+        prefix_width = pdfmetrics.stringWidth(current_text[:start], font_name, font_size)
+        value_width = pdfmetrics.stringWidth(current_text[start:end], font_name, font_size)
+        local_x = float(current_tm[4])
+        local_y = float(current_tm[5])
+        start_point = transform_point(
+            current_ctm,
+            local_x + float(current_tm[0]) * prefix_width,
+            local_y + float(current_tm[1]) * prefix_width,
+        )
+        end_point = transform_point(
+            current_ctm,
+            local_x + float(current_tm[0]) * (prefix_width + value_width),
+            local_y + float(current_tm[1]) * (prefix_width + value_width),
+        )
+        left = min(start_point[0], end_point[0])
+        right = max(start_point[0], end_point[0])
+        return (
+            right >= replacement.x_min - PDF_COORDINATE_TOLERANCE
+            and left <= replacement.x_max + PDF_COORDINATE_TOLERANCE
+        )
+
+    def replace_inline_range(
+        current_text: str,
+        start: int,
+        end: int,
+        new_text: str,
+        replacement: PdfTextReplacement,
+        font_name: str,
+        font_size: float,
+    ) -> str:
+        prefix = current_text[:start]
+        suffix = current_text[end:]
+        if replacement.alignment == "right":
+            old_width = pdfmetrics.stringWidth(current_text[start:end], font_name, font_size)
+            new_width = pdfmetrics.stringWidth(new_text, font_name, font_size)
+            space_width = pdfmetrics.stringWidth(" ", font_name, font_size)
+            whitespace = parser.re.search(r" +$", prefix)
+            if whitespace and space_width > 0:
+                space_delta = int(round((new_width - old_width) / space_width))
+                width_error = abs((new_width - old_width) - space_delta * space_width)
+                available_spaces = len(whitespace.group(0))
+                if width_error <= space_width * 0.2:
+                    if 0 < space_delta <= available_spaces:
+                        prefix = prefix[:-space_delta]
+                    elif space_delta < 0:
+                        prefix += " " * (-space_delta)
+        return prefix + new_text + suffix
+
+    def replace_exact_inline_text(
+        current_text: str,
+        replacement: PdfTextReplacement,
+        current_tm: list[Any],
+        current_ctm: tuple[float, float, float, float, float, float],
+        font_name: str,
+        font_size: float,
+    ) -> str | None:
+        start = current_text.find(replacement.old_text)
+        while start >= 0:
+            end = start + len(replacement.old_text)
+            line_row_match = (
+                replacement.field.startswith("line ")
+                and parser.re.match(r"^\s*\d{4}\.\d{2}\.\d{4}", current_text)
+            )
+            if line_row_match or inline_span_matches(
+                current_text,
+                start,
+                end,
+                current_tm,
+                current_ctm,
+                font_name,
+                font_size,
+                replacement,
+            ):
+                return replace_inline_range(
+                    current_text,
+                    start,
+                    end,
+                    replacement.new_text,
+                    replacement,
+                    font_name,
+                    font_size,
+                )
+            start = current_text.find(replacement.old_text, start + 1)
+        return None
+
+    def replace_compact_inline_quantity(
+        current_text: str,
+        replacement: PdfTextReplacement,
+        current_tm: list[Any],
+        current_ctm: tuple[float, float, float, float, float, float],
+        font_name: str,
+        font_size: float,
+    ) -> str | None:
+        if not replacement.field.endswith((" gross weight", " net quantity")):
+            return None
+        old_match = parser.re.fullmatch(
+            r"\s*([0-9][0-9,]*(?:\.\d+)?)\s+([A-Z][A-Z0-9]*)\s*",
+            replacement.old_text,
+            parser.re.I,
+        )
+        new_match = parser.re.fullmatch(
+            r"\s*([0-9][0-9,]*(?:\.\d+)?)\s+([A-Z][A-Z0-9]*)\s*",
+            replacement.new_text,
+            parser.re.I,
+        )
+        if not old_match or not new_match:
+            return None
+        old_value = parser.parse_decimal(old_match.group(1))
+        unit = old_match.group(2)
+        pattern = parser.re.compile(
+            rf"(?<![0-9.])([0-9][0-9,]*(?:\.\d+)?)(\s*)({parser.re.escape(unit)})(?![A-Z0-9])",
+            parser.re.I,
+        )
+        for match in pattern.finditer(current_text):
+            if parser.parse_decimal(match.group(1)) != old_value:
+                continue
+            if not inline_span_matches(
+                current_text,
+                match.start(),
+                match.end(),
+                current_tm,
+                current_ctm,
+                font_name,
+                font_size,
+                replacement,
+            ):
+                continue
+            new_number = new_match.group(1)
+            if "," not in match.group(1):
+                new_number = new_number.replace(",", "")
+            new_quantity = new_number + match.group(2) + new_match.group(2)
+            return replace_inline_range(
+                current_text,
+                match.start(),
+                match.end(),
+                new_quantity,
+                replacement,
+                font_name,
+                font_size,
+            )
+        return None
+
     def process_container(
         container: Any,
         inherited_resources: Any | None,
@@ -1754,33 +1948,52 @@ def apply_page_replacements(
                 break
             else:
                 row_applied: list[PdfTextReplacement] = []
+                inline_font_name: str | None = None
                 for replacement in list(pending):
                     y_matches = replacement.y is not None and abs(
                         baseline_y - replacement.y
                     ) <= max(replacement.y_tolerance, y_tolerance)
-                    if (
-                        not replacement.field.startswith("line ")
-                        or not y_matches
-                        or replacement.old_text not in current_text
-                        or not parser.re.match(r"^\s*\d{4}\.\d{2}\.\d{4}", current_text)
-                    ):
+                    if not y_matches:
                         continue
-                    current_text = current_text.replace(
-                        replacement.old_text,
-                        replacement.new_text,
-                        1,
+                    if inline_font_name is None:
+                        try:
+                            inline_font_name = page_font_name(resources, current_font)
+                        except ValueError:
+                            inline_font_name = replacement.font_name
+                    updated_text = replace_exact_inline_text(
+                        current_text,
+                        replacement,
+                        current_tm,
+                        current_ctm,
+                        inline_font_name,
+                        current_size,
                     )
+                    if updated_text is None:
+                        updated_text = replace_compact_inline_quantity(
+                            current_text,
+                            replacement,
+                            current_tm,
+                            current_ctm,
+                            inline_font_name,
+                            current_size,
+                        )
+                    if updated_text is None:
+                        continue
+                    current_text = updated_text
                     pending.remove(replacement)
                     row_applied.append(replacement)
                 if row_applied:
                     set_pdf_text_operands(operands, operator, current_text)
                     if not is_page:
-                        font_name = page_font_name(resources, current_font)
                         expand_form_bbox(
                             container,
                             content,
                             current_tm,
-                            pdfmetrics.stringWidth(current_text, font_name, current_size),
+                            pdfmetrics.stringWidth(
+                                current_text,
+                                inline_font_name or "Helvetica",
+                                current_size,
+                            ),
                         )
                     applied.extend(row_applied)
                     stream_changed = True
@@ -2261,6 +2474,8 @@ def health() -> dict[str, str]:
         "overlay_rule_style": "preserve-original-transformed-line-width",
         "pdf_text_update": "in-place-page-and-form-xobject-only",
         "pdf_overlay_fallback": "disabled-for-generation",
+        "combined_text_replacement": "coordinate-scoped-inline-and-compact-quantity",
+        "fee_summary_matching": "value-aware-flexible-decimals",
     }
 
 

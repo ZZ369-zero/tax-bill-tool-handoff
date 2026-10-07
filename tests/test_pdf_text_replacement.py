@@ -15,9 +15,13 @@ from reportlab.pdfgen import canvas
 from web_app.app import (
     PdfTextReplacement,
     amount_target_for_fragment,
+    amount_target_at_box,
     apply_page_replacements,
     build_pdf_text_replacements,
+    format_pdf_number_like_original,
+    fee_summary_target,
     line_field_key,
+    matching_amount_token,
     overlay_page_replacements,
     overlay_erase_rectangle,
     page_rule_segments,
@@ -112,6 +116,26 @@ class PdfTextReplacementTests(unittest.TestCase):
         pdf.translate(504, 193)
         pdf.doForm("amount")
         pdf.restoreState()
+        pdf.save()
+        path.write_bytes(buffer.getvalue())
+
+    def make_compact_quantity_pdf(self, path: Path) -> None:
+        buffer = BytesIO()
+        pdf = canvas.Canvas(buffer, pagesize=(612, 792))
+        pdf.setFont("Courier-Bold", 7)
+        pdf.drawString(
+            63.69,
+            389.25,
+            "3924.10.4000           542.05            1000NO,542.05KG",
+        )
+        pdf.save()
+        path.write_bytes(buffer.getvalue())
+
+    def make_combined_fee_summary_pdf(self, path: Path) -> None:
+        buffer = BytesIO()
+        pdf = canvas.Canvas(buffer, pagesize=(612, 792))
+        pdf.setFont("Courier-Bold", 8)
+        pdf.drawString(26, 282.59, "MPF   499   34.58")
         pdf.save()
         path.write_bytes(buffer.getvalue())
 
@@ -389,6 +413,120 @@ class PdfTextReplacementTests(unittest.TestCase):
         self.assertNotIn("$224.78", form_texts)
         self.assertEqual(form_texts.count("$285.98"), 1)
         self.assertNotIn("$285.98", main_text)
+
+    def test_replaces_compact_quantity_inside_combined_text_object(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.pdf"
+            output = Path(temp_dir) / "output.pdf"
+            self.make_compact_quantity_pdf(source)
+            writer = PdfWriter(clone_from=str(source))
+            replacement = PdfTextReplacement(
+                page=1,
+                field="line 001 net quantity",
+                old_text="1,000 NO",
+                new_text="1,200 NO",
+                x_min=230,
+                x_max=315,
+                y=386.5,
+                alignment="right",
+                font_name="Courier-Bold",
+                font_size=7,
+            )
+
+            applied = apply_page_replacements(writer.pages[0], writer, [replacement])
+            with output.open("wb") as stream:
+                writer.write(stream)
+
+            reader = PdfReader(str(output))
+            content = ContentStream(reader.pages[0].get_contents(), reader)
+            text = "".join(
+                text_from_pdf_text_operands(operands, operator)
+                for operands, operator in content.operations
+                if operator in (b"Tj", b"TJ")
+            )
+
+        self.assertEqual(applied, [replacement])
+        self.assertIn("1200NO,542.05KG", text)
+        self.assertNotIn("1000NO", text)
+
+    def test_replaces_amount_inside_combined_fee_summary_text_object(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.pdf"
+            output = Path(temp_dir) / "output.pdf"
+            self.make_combined_fee_summary_pdf(source)
+            writer = PdfWriter(clone_from=str(source))
+            replacement = PdfTextReplacement(
+                page=1,
+                field="MPF summary",
+                old_text="34.58",
+                new_text="33.58",
+                x_min=53.6,
+                x_max=107.6,
+                y=279.45,
+                alignment="right",
+                font_name="Courier-Bold",
+                font_size=8,
+            )
+
+            applied = apply_page_replacements(writer.pages[0], writer, [replacement])
+            with output.open("wb") as stream:
+                writer.write(stream)
+
+            reader = PdfReader(str(output))
+            content = ContentStream(reader.pages[0].get_contents(), reader)
+            text = "".join(
+                text_from_pdf_text_operands(operands, operator)
+                for operands, operator in content.operations
+                if operator in (b"Tj", b"TJ")
+            )
+
+        self.assertEqual(applied, [replacement])
+        self.assertIn("MPF   499   33.58", text)
+        self.assertNotIn("34.58", text)
+
+    def test_amount_matching_accepts_fee_codes_and_three_decimal_display(self) -> None:
+        self.assertEqual(matching_amount_token("MPF   499   34.58", "34.58"), "34.58")
+        self.assertEqual(matching_amount_token("34.580", "34.58"), "34.580")
+        self.assertEqual(format_pdf_number_like_original("33.58", "34.580"), "33.580")
+
+        fragments = [
+            SimpleNamespace(
+                page=1,
+                text="MPF   499   34.58",
+                x=26.0,
+                y=279.45,
+                size=8.0,
+                font="Courier-Bold",
+            ),
+            SimpleNamespace(
+                page=1,
+                text="34.580",
+                x=188.0,
+                y=241.34,
+                size=8.0,
+                font="Courier-Bold",
+            ),
+        ]
+        self.assertEqual(
+            fee_summary_target(
+                fragments,
+                fee_code="499",
+                label="MPF",
+                value="34.58",
+            )["text"],
+            "34.58",
+        )
+        self.assertEqual(
+            amount_target_at_box(
+                fragments,
+                value="34.58",
+                x_min=165,
+                x_max=270,
+                y_min=190,
+                y_max=245,
+            )["text"],
+            "34.580",
+        )
 
     def test_template_generation_does_not_fall_back_to_overlay(self) -> None:
         with TemporaryDirectory() as temp_dir:
