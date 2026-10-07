@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 from dataclasses import asdict, dataclass, field
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Iterable
@@ -18,8 +19,13 @@ PDF_EXTENSIONS = {".pdf"}
 MONEY_QUANT = Decimal("0.01")
 WHOLE_DOLLAR_QUANT = Decimal("1")
 MPF_RATE = Decimal("0.003464")
+# FY2026 limits, effective 2025-10-01 through 2026-09-30.
 MPF_MIN = Decimal("33.58")
 MPF_MAX = Decimal("651.50")
+# FY2027 limits, effective 2026-10-01. The 0.3464% rate is unchanged.
+MPF_FY2027_EFFECTIVE_DATE = date(2026, 10, 1)
+MPF_FY2027_MIN = Decimal("34.58")
+MPF_FY2027_MAX = Decimal("670.86")
 HMF_RATE = Decimal("0.00125")
 REPORTING_UNIT_PATTERN = r"[A-Z][A-Z0-9]*"
 
@@ -1522,11 +1528,43 @@ def sum_amounts(*values: str | None) -> str | None:
     return format_money(total) if has_value else None
 
 
-def clamp_mpf(value: Decimal) -> Decimal:
-    if value < MPF_MIN:
-        return MPF_MIN
-    if value > MPF_MAX:
-        return MPF_MAX
+def parse_cbp_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    cleaned = str(value).strip()
+    for date_format in ("%m/%d/%Y", "%m/%d/%y", "%m-%d-%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(cleaned, date_format).date()
+        except ValueError:
+            continue
+    return None
+
+
+def mpf_limits_for_document(document: TaxDocument | None) -> tuple[Decimal, Decimal]:
+    """Return the published MPF limits for the document's effective entry period.
+
+    CBP forms can omit Entry Date while still providing Import Date. Prefer Entry
+    Date, then Import Date, and use Summary Date only as a final fallback. This
+    keeps post-entry summaries from moving a pre-October import into a new fiscal
+    year's limits.
+    """
+    effective_date = None
+    if document is not None:
+        for field_name in ("entry_date", "import_date", "summary_date"):
+            effective_date = parse_cbp_date(getattr(document, field_name, None))
+            if effective_date is not None:
+                break
+    if effective_date is not None and effective_date >= MPF_FY2027_EFFECTIVE_DATE:
+        return MPF_FY2027_MIN, MPF_FY2027_MAX
+    return MPF_MIN, MPF_MAX
+
+
+def clamp_mpf(value: Decimal, document: TaxDocument | None = None) -> Decimal:
+    minimum, maximum = mpf_limits_for_document(document)
+    if value < minimum:
+        return minimum
+    if value > maximum:
+        return maximum
     return value
 
 
@@ -1545,9 +1583,11 @@ def apply_calculations(parsed_files: list[ParsedFile]) -> None:
             entered_total = None
 
         if mpf_line_total is not None:
-            parsed.document.calculated_mpf_total = format_money(clamp_mpf(mpf_line_total))
+            parsed.document.calculated_mpf_total = format_money(clamp_mpf(mpf_line_total, parsed.document))
         elif entered_total is not None:
-            parsed.document.calculated_mpf_total = format_money(clamp_mpf(money_round(entered_total * MPF_RATE)))
+            parsed.document.calculated_mpf_total = format_money(
+                clamp_mpf(money_round(entered_total * MPF_RATE), parsed.document)
+            )
         parsed.document.calculated_duty_total = format_money(duty_total) if duty_total is not None else None
         parsed.document.calculated_hmf_total = format_money(hmf_total) if hmf_total is not None else None
 

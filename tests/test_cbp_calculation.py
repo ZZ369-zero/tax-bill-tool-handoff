@@ -369,6 +369,44 @@ class CbpCalculationTests(unittest.TestCase):
         self.assertEqual(line_mpf_total, Decimal("40.61"))
         self.assertEqual(lines[1].calculated_mpf_amount, "2.37")
 
+    def test_fy2027_mpf_minimum_uses_import_date_when_entry_date_is_blank(self) -> None:
+        document = tax_document()
+        document.summary_date = "10/14/2026"
+        document.entry_date = None
+        document.import_date = "10/01/2026"
+        lines = [
+            tax_line("001", "1414", "2.7%", "12.50%", net_quantity="1400", net_unit="NO"),
+            tax_line("002", "1920", "5.3%", "12.50%", net_quantity="1600", net_unit="NO"),
+        ]
+
+        recalculate(document, lines, include_hmf=False)
+
+        self.assertEqual(document.calculated_mpf_total, "34.58")
+        self.assertEqual(document.calculated_other_total, "34.58")
+
+    def test_fy2026_mpf_minimum_uses_import_date_before_summary_date(self) -> None:
+        document = tax_document()
+        document.summary_date = "10/08/2026"
+        document.entry_date = None
+        document.import_date = "09/28/2026"
+        lines = [
+            tax_line("001", "1100", "3.4%", "12.50%", net_quantity="1100", net_unit="NO"),
+            tax_line("002", "1875", "6%", "12.50%", net_quantity="0", net_unit="PRS"),
+        ]
+
+        recalculate(document, lines, include_hmf=False)
+
+        self.assertEqual(document.calculated_mpf_total, "33.58")
+
+    def test_fy2027_mpf_maximum_is_670_86(self) -> None:
+        document = tax_document()
+        document.entry_date = "10/01/2026"
+        lines = [tax_line("001", "250000", "FREE", "", net_quantity="1", net_unit="NO")]
+
+        recalculate(document, lines, include_hmf=False)
+
+        self.assertEqual(document.calculated_mpf_total, "670.86")
+
     def test_modified_line_variance_is_not_reported_against_original_pdf(self) -> None:
         document = tax_document()
         document.duty_total = "2,006.95"

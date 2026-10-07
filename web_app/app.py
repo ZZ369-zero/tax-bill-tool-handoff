@@ -42,7 +42,7 @@ TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 PDF_OVERLAY_BORDER_SAFE_GAP = 0.8
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.25"
+APP_VERSION = "0.1.26"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 LINE_CALCULATION_FIELDS = ("hts", "net_quantity", "entered_value", "rate")
 
@@ -214,10 +214,12 @@ def recalculate(document: Any, lines: list[Any], *, include_hmf: bool) -> None:
     hmf_total = parser.sum_decimal_field(lines, "calculated_hmf_amount") if include_hmf else None
 
     if mpf_line_total is not None:
-        document.calculated_mpf_total = parser.format_money(parser.clamp_mpf(mpf_line_total))
+        document.calculated_mpf_total = parser.format_money(
+            parser.clamp_mpf(mpf_line_total, document)
+        )
     elif entered_total is not None:
         document.calculated_mpf_total = parser.format_money(
-            parser.clamp_mpf(parser.money_round(entered_total * parser.MPF_RATE))
+            parser.clamp_mpf(parser.money_round(entered_total * parser.MPF_RATE), document)
         )
     document.calculated_duty_total = parser.format_money(duty_total) if duty_total is not None else None
     document.calculated_hmf_total = parser.format_money(hmf_total) if hmf_total is not None else None
@@ -2450,6 +2452,7 @@ def health() -> dict[str, str]:
         "status": "ok",
         "version": APP_VERSION,
         "mpf_rounding": "line-sum",
+        "mpf_limits": "date-aware-fy2026-33.58-651.50-fy2027-34.58-670.86",
         "worksheet_matching": "best-hts-match",
         "kg_quantity": "item-size-aware",
         "dpr_quantity": "pairs-divided-by-12",
