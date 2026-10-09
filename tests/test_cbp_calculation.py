@@ -212,6 +212,44 @@ class CbpCalculationTests(unittest.TestCase):
         self.assertEqual(parsed["rate"], "5%")
         self.assertEqual(parsed["duty_amount"], "160.00")
 
+    def test_parses_unitless_gross_weight_before_compact_net_quantity(self) -> None:
+        text = "8513.10.4000           588.63            1200NO"
+        row = [
+            parser.TextFragment(
+                page=1,
+                x=63.69,
+                y=386.5,
+                size=7.0,
+                font="/Courier-Bold",
+                text=text,
+            ),
+            parser.TextFragment(
+                page=1,
+                x=323.66,
+                y=386.94,
+                size=7.0,
+                font="/Courier-Bold",
+                text="1200",
+            ),
+        ]
+
+        parsed = parser.parse_main_hts_row(row, " ".join(item.text for item in row), "8513.10.4000")
+
+        self.assertEqual(parsed["gross_weight"], "588.63")
+        self.assertIsNone(parsed["gross_unit"])
+        self.assertEqual(parsed["net_quantity"], "1200")
+        self.assertEqual(parsed["net_unit"], "NO")
+        self.assertEqual(parsed["entered_value"], "1200")
+
+    def test_parses_invoice_no_abbreviation(self) -> None:
+        invoice_number, invoice_value, entered_value = parser.parse_invoice_totals(
+            "Invoice No. 0210\nI.V. 2,850.00 USD\nE.V. 2,850.00"
+        )
+
+        self.assertEqual(invoice_number, "0210")
+        self.assertEqual(invoice_value, "2,850.00")
+        self.assertEqual(entered_value, "2,850.00")
+
     def test_parses_entered_value_separately_from_adjacent_percent_rate(self) -> None:
         row = [
             parser.TextFragment(

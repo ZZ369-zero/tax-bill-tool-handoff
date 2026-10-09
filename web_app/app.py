@@ -42,7 +42,7 @@ TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 PDF_OVERLAY_BORDER_SAFE_GAP = 0.8
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.26"
+APP_VERSION = "0.1.27"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 LINE_CALCULATION_FIELDS = ("hts", "net_quantity", "entered_value", "rate")
 
@@ -872,11 +872,20 @@ def original_line_targets(original_path: Path, parsed: Any) -> dict[tuple[int, s
         mpf_target = None
         hmf_y = None
         hmf_target = None
+        invoice_value_target = None
+        ndc_y = None
+        ev_y = None
         for row in rows:
             text = row_text(row)
             if original_line.hts and original_line.hts in text:
                 hts_y = row[0].y
                 hts_row = row
+            if parser.re.search(r"\bINV\b", text, parser.re.I):
+                invoice_value_target = zone_amount_target(row, 320, 398)
+            if parser.re.search(r"\bNDC\b", text, parser.re.I):
+                ndc_y = row[0].y
+            if parser.re.search(r"\bEV\b", text, parser.re.I):
+                ev_y = row[0].y
             if parser.re.search(r"Merchandise\s+Process(?:ing|\.)?\s*Fee", text, parser.re.I):
                 mpf_y = row[0].y
                 mpf_target = zone_amount_target(row, 500, 590)
@@ -893,13 +902,51 @@ def original_line_targets(original_path: Path, parsed: Any) -> dict[tuple[int, s
                 chapter_targets.append(zone_amount_target(row, 500, 590))
         entered_value_target = zone_amount_target(hts_row, 320, 398) if hts_row else None
         base_duty_target = zone_amount_target(hts_row, 500, 590) if hts_row else None
+        gross_weight_target = None
+        gross_weight_value = parser.parse_decimal(original_line.gross_weight)
+        if hts_row and gross_weight_value is not None:
+            for fragment in hts_row:
+                for match in parser.re.finditer(
+                    r"(?<![0-9.])[0-9][0-9,]*(?:\.\d+)?(?![0-9.])",
+                    display(fragment.text),
+                ):
+                    if parser.parse_decimal(match.group(0)) != gross_weight_value:
+                        continue
+                    candidate = inline_amount_target(
+                        fragment,
+                        match.group(0),
+                        match.start(),
+                        left_padding=0,
+                    )
+                    if candidate.get("x_max", 0) >= 145 and candidate.get("x_min", 999) <= 235:
+                        gross_weight_target = candidate
+                        break
+                if gross_weight_target:
+                    break
+
+        entered_value_detail_target = None
+        if ndc_y is not None and ev_y is not None:
+            upper_y = max(ndc_y, ev_y)
+            lower_y = min(ndc_y, ev_y)
+            for row in rows:
+                row_y = row[0].y
+                text = row_text(row)
+                if not (lower_y < row_y < upper_y) or parser.re.search(r"\b(?:INV|NDC|EV)\b", text, parser.re.I):
+                    continue
+                candidate = zone_amount_target(row, 320, 398)
+                if candidate and values_equal(candidate.get("text"), original_line.entered_value):
+                    entered_value_detail_target = candidate
+                    break
         line_style = row_text_style(hts_row) or fragment_text_style(start)
         targets[(start.page, line_no)] = {
             "original": original_line,
             "line_style": line_style,
             "hts_y": hts_y,
+            "gross_weight_target": gross_weight_target,
             "entered_value_target": entered_value_target,
             "entered_value_text": entered_value_target.get("text") if entered_value_target else None,
+            "invoice_value_target": invoice_value_target,
+            "entered_value_detail_target": entered_value_detail_target,
             "base_duty_target": base_duty_target,
             "base_duty_text": base_duty_target.get("text") if base_duty_target else None,
             "chapter_ys": chapter_ys,
@@ -1085,7 +1132,8 @@ def build_pdf_text_replacements(
             )
 
         if gross_weight_changed:
-            old_gross_text = quantity_text(
+            gross_weight_target = target.get("gross_weight_target") or {}
+            old_gross_text = gross_weight_target.get("text") or quantity_text(
                 original_line.gross_weight,
                 original_line.gross_unit,
                 original_line.gross_weight,
@@ -1103,10 +1151,11 @@ def build_pdf_text_replacements(
                 new_value=new_gross_text,
                 old_text=old_gross_text,
                 new_text=new_gross_text,
-                x_min=185,
-                x_max=235,
-                y=hts_y,
-                **replacement_style(None, line_style),
+                x_min=gross_weight_target.get("x_min", 145),
+                x_max=gross_weight_target.get("x_max", 235),
+                y=gross_weight_target.get("y", hts_y),
+                alignment=gross_weight_target.get("alignment", "right"),
+                **replacement_style(gross_weight_target, line_style),
             )
 
         if net_quantity_changed:
@@ -1174,6 +1223,31 @@ def build_pdf_text_replacements(
                 erase_x_min=entered_value_erase_x_min,
                 **entered_value_style,
             )
+            for detail_name, detail_target in (
+                ("INV value", target.get("invoice_value_target")),
+                ("EV value", target.get("entered_value_detail_target")),
+            ):
+                if not detail_target:
+                    continue
+                old_detail_text = detail_target.get("text") or old_entered_text
+                add_replacement(
+                    replacements,
+                    page=line.page,
+                    field=f"line {line.line_no} {detail_name}",
+                    old_value=original_line.entered_value,
+                    new_value=line.entered_value,
+                    old_text=old_detail_text,
+                    new_text=format_pdf_money_like_original(
+                        line.entered_value,
+                        old_detail_text,
+                        keep_cents=False,
+                    ),
+                    x_min=detail_target.get("x_min", 320),
+                    x_max=detail_target.get("x_max", 398),
+                    y=detail_target.get("y"),
+                    alignment=detail_target.get("alignment", "right"),
+                    **replacement_style(detail_target, line_style),
+                )
         if rate_changed:
             add_replacement(
                 replacements,
@@ -1746,11 +1820,7 @@ def apply_page_replacements(
         start = current_text.find(replacement.old_text)
         while start >= 0:
             end = start + len(replacement.old_text)
-            line_row_match = (
-                replacement.field.startswith("line ")
-                and parser.re.match(r"^\s*\d{4}\.\d{2}\.\d{4}", current_text)
-            )
-            if line_row_match or inline_span_matches(
+            if inline_span_matches(
                 current_text,
                 start,
                 end,
@@ -2478,6 +2548,10 @@ def health() -> dict[str, str]:
         "pdf_text_update": "in-place-page-and-form-xobject-only",
         "pdf_overlay_fallback": "disabled-for-generation",
         "combined_text_replacement": "coordinate-scoped-inline-and-compact-quantity",
+        "line_field_matching": "content-and-column-coordinate-required",
+        "draft_unitless_gross_weight": "parsed-and-updated-in-place",
+        "draft_entered_value_details": "inv-and-ev-synchronized",
+        "manual_hmf_validation": "original-template-layout-enforced",
         "fee_summary_matching": "value-aware-flexible-decimals",
     }
 
@@ -2681,11 +2755,18 @@ def generate_pdf(payload: GeneratePdfRequest) -> StreamingResponse:
         document = dataclass_from_dict(parser.TaxDocument, payload.document)
         lines = [dataclass_from_dict(parser.TaxLine, line) for line in payload.lines]
         document.line_count = len(lines)
+        original_path = upload_path(payload.upload_id)
+        original = parser.parse_pdf(original_path, "original", f"upload|{original_path.stem}")
+        normalized_transport_mode = normalize_transport_mode(payload.transport_mode)
+        validate_hmf_pdf_layout(
+            original_has_hmf=parsed_has_hmf(original.document, original.lines),
+            include_hmf=payload.include_hmf,
+            transport_mode=normalized_transport_mode,
+        )
         recalculate(document, lines, include_hmf=payload.include_hmf)
         validation_errors = line_validation_errors(lines, payload.modified_fields)
         if validation_errors:
             raise ValueError("; ".join(validation_errors))
-        original_path = upload_path(payload.upload_id)
         pdf_bytes = generate_adjusted_pdf(original_path, document, lines, payload.modified_fields)
         filename = f"{clean_filename(document.source_file)}-adjusted-7501.pdf"
         return StreamingResponse(

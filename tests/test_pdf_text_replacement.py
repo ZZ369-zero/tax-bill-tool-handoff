@@ -49,8 +49,21 @@ class PdfTextReplacementTests(unittest.TestCase):
     def make_combined_line_pdf(self, path: Path) -> None:
         buffer = BytesIO()
         pdf = canvas.Canvas(buffer, pagesize=(612, 792))
-        pdf.setFont("Helvetica", 9)
-        pdf.drawString(67, 398, "3924.90.5650 2,048 KG 3,021.00 NO $1,511 3.4% $51.37")
+        pdf.setFont("Courier", 9)
+        pdf.drawString(
+            67,
+            398,
+            "3924.90.5650         2,048 KG 3,021.00 NO          $1,511 3.4% $51.37",
+        )
+        pdf.save()
+        path.write_bytes(buffer.getvalue())
+
+    def make_duplicate_line_value_pdf(self, path: Path) -> None:
+        buffer = BytesIO()
+        pdf = canvas.Canvas(buffer, pagesize=(612, 792))
+        pdf.setFont("Courier-Bold", 7)
+        pdf.drawString(63.69, 386.5, "8513.10.4000           588.63            1200NO")
+        pdf.drawString(323.66, 386.94, "1200")
         pdf.save()
         path.write_bytes(buffer.getvalue())
 
@@ -678,6 +691,37 @@ class PdfTextReplacementTests(unittest.TestCase):
             self.assertNotIn("2,048 KG", text)
             self.assertNotIn("$1,511", text)
 
+    def test_duplicate_number_replacement_requires_target_column(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.pdf"
+            output = Path(temp_dir) / "output.pdf"
+            self.make_duplicate_line_value_pdf(source)
+
+            writer = PdfWriter(clone_from=str(source))
+            replacement = PdfTextReplacement(
+                page=1,
+                field="line 001 entered value",
+                old_text="1200",
+                new_text="1320",
+                x_min=323.0,
+                x_max=342.0,
+                y=386.94,
+                alignment="left",
+                font_name="Courier-Bold",
+                font_size=7,
+            )
+
+            applied = apply_page_replacements(writer.pages[0], writer, [replacement])
+            with output.open("wb") as stream:
+                writer.write(stream)
+
+            text = PdfReader(str(output)).pages[0].extract_text()
+
+        self.assertEqual(applied, [replacement])
+        self.assertIn("1200NO", text)
+        self.assertIn("1320", text)
+        self.assertNotIn("1320NO", text)
+
     def test_replaces_text_slightly_outside_coordinate_boundary(self) -> None:
         with TemporaryDirectory() as temp_dir:
             source = Path(temp_dir) / "source.pdf"
@@ -912,6 +956,22 @@ class PdfTextReplacementTests(unittest.TestCase):
                         "font_name": "Courier",
                         "font_size": 10,
                     },
+                    "invoice_value_target": {
+                        "text": "2550",
+                        "x_min": 327,
+                        "x_max": 383,
+                        "y": 289.34,
+                        "font_name": "Courier",
+                        "font_size": 10,
+                    },
+                    "entered_value_detail_target": {
+                        "text": "2550",
+                        "x_min": 327,
+                        "x_max": 383,
+                        "y": 277.34,
+                        "font_name": "Courier",
+                        "font_size": 10,
+                    },
                     "base_duty_target": {
                         "text": "0.00",
                         "x_min": 530,
@@ -960,6 +1020,8 @@ class PdfTextReplacementTests(unittest.TestCase):
         fields = {replacement.field for replacement in replacements}
         self.assertNotIn("line 001 MPF", fields)
         self.assertIn("line 001 entered value", fields)
+        self.assertIn("line 001 INV value", fields)
+        self.assertIn("line 001 EV value", fields)
 
 
 if __name__ == "__main__":

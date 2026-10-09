@@ -755,6 +755,12 @@ def parse_invoice_totals(text: str) -> tuple[str | None, str | None, str | None]
     )
     if not match:
         invoice_match = re.search(r"Invoice Number\s*-\s*([^\n]+)", text, re.I)
+        if not invoice_match:
+            invoice_match = re.search(
+                r"Invoice\s+No\.\s*([A-Z0-9][A-Z0-9._/-]*)",
+                text,
+                re.I,
+            )
         invoice_value_match = re.search(r"\bI\.V\.\s+([0-9,]+\.\d{2})\s+USD", text, re.I)
         entered_value_match = re.search(
             r"\bE\.V\.\s+([0-9,]+\.\d{2})(?:\s+\S+)?(?:\s+([0-9,]+))?",
@@ -1313,6 +1319,23 @@ def parse_main_hts_row(
     if compact_quantities["net_quantity"]:
         result["net_quantity"] = compact_quantities["net_quantity"]
         result["net_unit"] = compact_quantities["net_unit"]
+
+    # Some DRAFT 7501 layouts omit the unit in Block 34 while keeping the
+    # compact quantity/unit pair in Block 35 inside the same text object:
+    #     8513.10.4000      588.63      1200NO
+    # Treat the number between HTS and the compact pair as gross weight.  It
+    # must remain unitless so a later in-place update preserves the template.
+    unitless_gross_match = re.search(
+        rf"{re.escape(hts)}\s+"
+        rf"([0-9,]+(?:\.\d+)?)\s+"
+        rf"([0-9,]+(?:\.\d+)?)({REPORTING_UNIT_PATTERN})(?![A-Z0-9])",
+        row_text_value,
+        re.I,
+    )
+    if unitless_gross_match:
+        result["gross_weight"] = result["gross_weight"] or unitless_gross_match.group(1)
+        result["net_quantity"] = result["net_quantity"] or unitless_gross_match.group(2)
+        result["net_unit"] = result["net_unit"] or unitless_gross_match.group(3).upper()
 
     for fragment in row:
         text = normalize_spaces(fragment.text)
