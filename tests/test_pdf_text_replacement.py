@@ -91,6 +91,21 @@ class PdfTextReplacementTests(unittest.TestCase):
         with path.open("wb") as output:
             writer.write(output)
 
+    def make_td_pdf(self, path: Path) -> None:
+        buffer = BytesIO()
+        pdf = canvas.Canvas(buffer, pagesize=(595, 842))
+        pdf.setFont("Helvetica", 9)
+        pdf.drawString(30, 30, "UNCHANGED")
+        pdf.save()
+        path.write_bytes(buffer.getvalue())
+        writer = PdfWriter(clone_from=str(path))
+        page = writer.pages[0]
+        stream = DecodedStreamObject()
+        stream.set_data(b"BT /F1 9 Tf 500 300 Td (123.45) Tj ET\n")
+        page[NameObject("/Contents")] = writer._add_object(stream)
+        with path.open("wb") as output:
+            writer.write(output)
+
     def make_invoice_footer_pdf(self, path: Path) -> None:
         buffer = BytesIO()
         pdf = canvas.Canvas(buffer, pagesize=(612, 792))
@@ -195,6 +210,22 @@ class PdfTextReplacementTests(unittest.TestCase):
             self.assertIn("$125.00", text)
             self.assertNotIn("$100.00", text)
             self.assertIn("UNCHANGED", text)
+
+    def test_replaces_td_positioned_text_and_keeps_right_edge(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.pdf"
+            self.make_td_pdf(source)
+            writer = PdfWriter(clone_from=str(source))
+            replacement = PdfTextReplacement(
+                page=1, field="duty total", old_text="123.45", new_text="1,234.56",
+                x_min=490, x_max=560, y=300,
+            )
+            applied = apply_page_replacements(writer.pages[0], writer, [replacement])
+            content = ContentStream(writer.pages[0].get_contents(), writer)
+            td = next(operands for operands, operator in content.operations if operator == b"Td")
+            self.assertEqual(applied, [replacement])
+            self.assertIn("1,234.56", writer.pages[0].extract_text())
+            self.assertLess(float(td[0]), 500)
 
     def test_quantity_keeps_original_precision_and_unit(self) -> None:
         self.assertEqual(quantity_text("840", "NO", "588.00"), "840.00 NO")

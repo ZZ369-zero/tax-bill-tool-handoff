@@ -42,7 +42,7 @@ TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 PDF_OVERLAY_BORDER_SAFE_GAP = 0.8
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.27"
+APP_VERSION = "0.1.28"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 LINE_CALCULATION_FIELDS = ("hts", "net_quantity", "entered_value", "rate")
 
@@ -748,6 +748,25 @@ def document_replacement_targets(original_path: Path, document: Any) -> dict[str
     reader = PdfReader(str(original_path))
     fragments = parser.extract_fragments(reader, original_path)
     targets: dict[str, dict[str, Any]] = {}
+    if parser.is_2026_entry_summary(fragments):
+        boxes = {
+            "total_entered_value": (document.total_entered_value, 240, 285, 296, 303, 1),
+            "mpf_summary": (document.mpf_total, 115, 155, 297, 304, 1),
+            "block_39_other_fees": (document.total_other_fees or document.other_total, 250, 285, 260, 267, 1),
+            "duty_total": (document.duty_total, 500, 560, 284, 291, 1),
+            "other_total": (document.other_total, 510, 560, 235, 242, 1),
+            "grand_total": (document.grand_total, 495, 570, 211, 219, 1),
+            "invoice_value": (document.invoice_value, 245, 325, 569, 577, document.pages),
+            "invoice_entered_value": (document.invoice_entered_value, 245, 325, 557, 565, document.pages),
+        }
+        for name, (value, x_min, x_max, y_min, y_max, page) in boxes.items():
+            target = amount_target_at_box(
+                fragments, page=page, value=value, x_min=x_min,
+                x_max=x_max, y_min=y_min, y_max=y_max,
+            )
+            if target:
+                targets[name] = target
+        return targets
     target = amount_target_at_box(
         fragments,
         value=document.total_entered_value,
@@ -903,6 +922,7 @@ def original_line_targets(original_path: Path, parsed: Any) -> dict[tuple[int, s
         entered_value_target = zone_amount_target(hts_row, 320, 398) if hts_row else None
         base_duty_target = zone_amount_target(hts_row, 500, 590) if hts_row else None
         gross_weight_target = None
+        gross_weight_targets = []
         gross_weight_value = parser.parse_decimal(original_line.gross_weight)
         if hts_row and gross_weight_value is not None:
             for fragment in hts_row:
@@ -923,6 +943,20 @@ def original_line_targets(original_path: Path, parsed: Any) -> dict[tuple[int, s
                         break
                 if gross_weight_target:
                     break
+        if gross_weight_value is not None:
+            for row in rows:
+                for fragment in row:
+                    if not 145 <= fragment.x <= 280:
+                        continue
+                    match = parser.re.fullmatch(r"\s*([0-9,]+(?:\.\d+)?)\s+KG\s*", display(fragment.text))
+                    if match and parser.parse_decimal(match.group(1)) == gross_weight_value:
+                        gross_weight_targets.append({
+                            "y": fragment.y, "text": fragment.text.strip(),
+                            "x_min": fragment.x - 1, "x_max": fragment.x + 100,
+                            "alignment": "left", **fragment_text_style(fragment),
+                        })
+        if gross_weight_targets:
+            gross_weight_target = gross_weight_targets[0]
 
         entered_value_detail_target = None
         if ndc_y is not None and ev_y is not None:
@@ -943,6 +977,7 @@ def original_line_targets(original_path: Path, parsed: Any) -> dict[tuple[int, s
             "line_style": line_style,
             "hts_y": hts_y,
             "gross_weight_target": gross_weight_target,
+            "gross_weight_targets": gross_weight_targets,
             "entered_value_target": entered_value_target,
             "entered_value_text": entered_value_target.get("text") if entered_value_target else None,
             "invoice_value_target": invoice_value_target,
@@ -1132,31 +1167,32 @@ def build_pdf_text_replacements(
             )
 
         if gross_weight_changed:
-            gross_weight_target = target.get("gross_weight_target") or {}
-            old_gross_text = gross_weight_target.get("text") or quantity_text(
-                original_line.gross_weight,
-                original_line.gross_unit,
-                original_line.gross_weight,
-            )
-            new_gross_text = quantity_text(
-                line.gross_weight,
-                line.gross_unit or original_line.gross_unit,
-                original_line.gross_weight,
-            )
-            add_replacement(
-                replacements,
-                page=line.page,
-                field=f"line {line.line_no} gross weight",
-                old_value=old_gross_text,
-                new_value=new_gross_text,
-                old_text=old_gross_text,
-                new_text=new_gross_text,
-                x_min=gross_weight_target.get("x_min", 145),
-                x_max=gross_weight_target.get("x_max", 235),
-                y=gross_weight_target.get("y", hts_y),
-                alignment=gross_weight_target.get("alignment", "right"),
-                **replacement_style(gross_weight_target, line_style),
-            )
+            gross_targets = target.get("gross_weight_targets") or [target.get("gross_weight_target") or {}]
+            for gross_index, gross_weight_target in enumerate(gross_targets):
+                old_gross_text = gross_weight_target.get("text") or quantity_text(
+                    original_line.gross_weight, original_line.gross_unit, original_line.gross_weight,
+                )
+                new_gross_text = quantity_text(
+                    line.gross_weight, line.gross_unit or original_line.gross_unit,
+                    original_line.gross_weight,
+                )
+                add_replacement(
+                    replacements,
+                    page=line.page,
+                    field=(
+                        f"line {line.line_no} gross weight"
+                        if gross_index == 0 else f"line {line.line_no} gross weight {gross_index + 1}"
+                    ),
+                    old_value=old_gross_text,
+                    new_value=new_gross_text,
+                    old_text=old_gross_text,
+                    new_text=new_gross_text,
+                    x_min=gross_weight_target.get("x_min", 145),
+                    x_max=gross_weight_target.get("x_max", 235),
+                    y=gross_weight_target.get("y", hts_y),
+                    alignment=gross_weight_target.get("alignment", "right"),
+                    **replacement_style(gross_weight_target, line_style),
+                )
 
         if net_quantity_changed:
             old_quantity_text = quantity_text(
@@ -1373,7 +1409,11 @@ def build_pdf_text_replacements(
                 "text",
                 format_pdf_number(original_document.total_entered_value, keep_cents=False),
             ),
-            new_text=format_pdf_number(document.total_entered_value, keep_cents=False),
+            new_text=format_pdf_money_like_original(
+                document.total_entered_value,
+                target.get("text", ""),
+                keep_cents="." in target.get("text", ""),
+            ) if target else format_pdf_number(document.total_entered_value, keep_cents=False),
             x_min=target.get("x_min", 175),
             x_max=target.get("x_max", 260),
             y=target.get("y", 248),
@@ -1442,12 +1482,13 @@ def build_pdf_text_replacements(
                 "text",
                 format_pdf_number(original_document.total_other_fees or original_document.other_total),
             ),
-            new_text=format_pdf_number_like_original(
+            new_text=format_pdf_money_like_original(
                 document.calculated_other_total,
-                target.get(
-                    "text",
-                    format_pdf_number(original_document.total_other_fees or original_document.other_total),
-                ),
+                target["text"],
+                keep_cents="." in target["text"],
+            ) if target else format_pdf_number_like_original(
+                document.calculated_other_total,
+                format_pdf_number(original_document.total_other_fees or original_document.other_total),
             ),
             x_min=target.get("x_min", 175),
             x_max=target.get("x_max", 260),
@@ -1919,6 +1960,8 @@ def apply_page_replacements(
         current_ctm = outer_ctm
         ctm_stack: list[tuple[float, float, float, float, float, float]] = []
         current_tm: list[Any] | None = None
+        current_position_operands: list[Any] | None = None
+        current_position_is_relative = False
         current_font: Any = None
         current_size = 0.0
         stream_changed = False
@@ -1960,12 +2003,23 @@ def apply_page_replacements(
                 continue
             if operator == b"Tm":
                 current_tm = operands
+                current_position_operands = operands
+                current_position_is_relative = False
+                continue
+            if operator in (b"Td", b"TD") and len(operands) >= 2:
+                prior_x = float(current_tm[4]) if current_tm is not None else 0.0
+                prior_y = float(current_tm[5]) if current_tm is not None else 0.0
+                current_tm = [1, 0, 0, 1, prior_x + float(operands[0]), prior_y + float(operands[1])]
+                current_position_operands = operands
+                current_position_is_relative = True
                 continue
             if operator == b"BT":
                 current_tm = None
+                current_position_operands = None
                 continue
             if operator == b"ET":
                 current_tm = None
+                current_position_operands = None
                 continue
             if (
                 not allow_replacements
@@ -2006,6 +2060,13 @@ def apply_page_replacements(
                     current_tm[5] = FloatObject(
                         float(current_tm[5]) + float(current_tm[1]) * width_delta
                     )
+                    if current_position_is_relative and current_position_operands is not None:
+                        current_position_operands[0] = FloatObject(
+                            float(current_position_operands[0]) + float(current_tm[0]) * width_delta
+                        )
+                        current_position_operands[1] = FloatObject(
+                            float(current_position_operands[1]) + float(current_tm[1]) * width_delta
+                        )
                 set_pdf_text_operands(operands, operator, replacement.new_text)
                 if not is_page:
                     new_width = pdfmetrics.stringWidth(
@@ -2553,6 +2614,7 @@ def health() -> dict[str, str]:
         "draft_entered_value_details": "inv-and-ev-synchronized",
         "manual_hmf_validation": "original-template-layout-enforced",
         "fee_summary_matching": "value-aware-flexible-decimals",
+        "entry_summary_2026": "header-invoice-gross-weight-and-td-text-support",
     }
 
 

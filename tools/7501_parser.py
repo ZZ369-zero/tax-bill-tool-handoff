@@ -903,6 +903,45 @@ def parse_header_document(
         invoice_value=invoice_value,
         invoice_entered_value=invoice_entered_value,
     )
+    if is_2026_entry_summary(fragments):
+        new_template_fields = {
+            "entry_number": (25, 137, 718, 725),
+            "entry_type": (140, 195, 718, 725),
+            "summary_date": (195, 260, 718, 725),
+            "port_code": (390, 440, 718, 725),
+            "entry_date": (440, 570, 718, 725),
+            "mode_of_transport": (160, 210, 694, 701),
+            "country_of_origin": (290, 370, 694, 701),
+            "import_date": (440, 570, 694, 701),
+            "bl_or_awb_number": (25, 155, 670, 678),
+            "manufacturer_id": (160, 285, 670, 678),
+            "exporting_country": (290, 370, 670, 678),
+            "export_date": (440, 570, 670, 678),
+            "consignee_number": (160, 285, 575, 582),
+            "importer_number": (290, 390, 575, 582),
+            "importer_of_record": (290, 570, 540, 558),
+        }
+        for field_name, (x_min, x_max, y_min, y_max) in new_template_fields.items():
+            setattr(
+                doc,
+                field_name,
+                value_at_box(
+                    fragments, page=1, x_min=x_min, x_max=x_max,
+                    y_min=y_min, y_max=y_max,
+                ),
+            )
+        doc.ultimate_consignee = None
+        doc.mpf_total = money_at_box(
+            fragments, page=1, x_min=115, x_max=160, y_min=297, y_max=304,
+        )
+        doc.invoice_number = invoice_number_for_2026_summary(fragments)
+        invoice_page = len(reader.pages)
+        doc.invoice_value = money_at_box(
+            fragments, page=invoice_page, x_min=240, x_max=320, y_min=569, y_max=577,
+        )
+        doc.invoice_entered_value = money_at_box(
+            fragments, page=invoice_page, x_min=240, x_max=320, y_min=557, y_max=565,
+        )
     notes = []
     if not doc.has_text_layer:
         notes.append("no readable text layer")
@@ -919,6 +958,24 @@ def parse_header_document(
         notes.append("total entered value filled from invoice totals")
     doc.parse_notes = "; ".join(notes)
     return doc
+
+
+def is_2026_entry_summary(fragments: list[TextFragment]) -> bool:
+    page_one = [fragment.text for fragment in fragments if fragment.page == 1]
+    return (
+        any("Summary Status" in text for text in page_one)
+        and any("Other Fee Summary" in text for text in page_one)
+        and any("CBP Form 7501 (02/26)" in text for text in page_one)
+    )
+
+
+def invoice_number_for_2026_summary(fragments: list[TextFragment]) -> str | None:
+    for fragment in fragments:
+        if fragment.page == 1 and 400 <= fragment.y <= 430:
+            match = re.search(r"Invoice\s+Number\s+([^\s]+)", fragment.text, re.I)
+            if match:
+                return match.group(1)
+    return None
 
 
 def prefer_larger_amount(first: str | None, second: str | None) -> str | None:
@@ -1071,6 +1128,8 @@ def rows_for_line(
         if (
             "Totals for Invoice" in row_text_value
             or "Other Fee Summary" in row_text_value
+            or re.match(r"^Invoice\s+(?:Number|Value)\b", row_text_value, re.I)
+            or row_text_value.startswith("Total Entered Value (Invoice)")
             or re.match(r"^\s*(?:I\.V\.|E\.V\.)(?:\s|$)", row_text_value, re.I)
         ):
             break
@@ -1128,13 +1187,18 @@ def parse_line_rows(
             chapter_codes.append(chapter_match["code"])
             chapter_rates.append(chapter_match["rate"] or "")
             chapter_amounts.append(chapter_match["amount"] or "")
+            gross_match = re.search(r"\b([0-9,]+(?:\.\d+)?)\s+KG\b", text)
+            if gross_match and not line.gross_weight:
+                line.gross_weight = gross_match.group(1)
+                line.gross_unit = "KG"
             continue
 
         if hts_match:
             line.hts = hts_match.group(1)
             parsed = parse_main_hts_row(row, text, hts_match.group(1))
             for field_name, value in parsed.items():
-                setattr(line, field_name, value)
+                if value is not None or getattr(line, field_name) is None:
+                    setattr(line, field_name, value)
             if not line.entered_value:
                 notes.append("entered value not parsed")
             if not line.rate:
@@ -1148,6 +1212,8 @@ def parse_line_rows(
 
         if text == "N" or text.endswith(" N"):
             line.relationship = "N"
+            continue
+        if re.fullmatch(r"[0-9,]+(?:\.\d+)?\s+KG", text):
             continue
         if re.search(r"NOT\s*-?\s*RELATED", text, re.I):
             line.relationship = "N"
