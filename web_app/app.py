@@ -943,7 +943,7 @@ def original_line_targets(original_path: Path, parsed: Any) -> dict[tuple[int, s
                         break
                 if gross_weight_target:
                     break
-        if gross_weight_value is not None:
+        if gross_weight_value is not None and parser.is_2026_entry_summary(fragments):
             for row in rows:
                 for fragment in row:
                     if not 145 <= fragment.x <= 280:
