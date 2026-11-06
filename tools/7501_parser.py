@@ -747,6 +747,32 @@ def money_at_box(
     return parse_money(text)
 
 
+def amount_fragment_on_labeled_row(
+    fragments: list[TextFragment],
+    *,
+    page: int,
+    label: str,
+    x_min: float = 200,
+    x_max: float = 350,
+) -> TextFragment | None:
+    target = normalized_label(label)
+    labels = [
+        fragment for fragment in fragments
+        if fragment.page == page and target in normalized_label(fragment.text)
+    ]
+    for label_fragment in labels:
+        candidates = [
+            fragment for fragment in fragments
+            if fragment.page == page
+            and x_min <= fragment.x <= x_max
+            and abs(fragment.y - label_fragment.y) <= 1.5
+            and parse_money(fragment.text) is not None
+        ]
+        if candidates:
+            return sorted(candidates, key=lambda fragment: fragment.x)[0]
+    return None
+
+
 def parse_invoice_totals(text: str) -> tuple[str | None, str | None, str | None]:
     match = re.search(
         r"Totals for Invoice.*?\n([^\n]+?)\s+([0-9,]+\.\d{2})\s+USD\s+1\.00000\s+([0-9,]+\.\d{2})\s+USD",
@@ -862,6 +888,7 @@ def parse_header_document(
         fragments, "501", "HMF"
     )
 
+    is_2026_template = is_2026_entry_summary(fragments)
     doc = TaxDocument(
         file_role=file_role,
         source_file=str(path),
@@ -903,7 +930,7 @@ def parse_header_document(
         invoice_value=invoice_value,
         invoice_entered_value=invoice_entered_value,
     )
-    if is_2026_entry_summary(fragments):
+    if is_2026_template:
         new_template_fields = {
             "entry_number": (25, 137, 718, 725),
             "entry_type": (140, 195, 718, 725),
@@ -934,14 +961,19 @@ def parse_header_document(
         doc.mpf_total = money_at_box(
             fragments, page=1, x_min=115, x_max=160, y_min=297, y_max=304,
         )
+        doc.total_entered_value = money_at_box(
+            fragments, page=1, x_min=240, x_max=285, y_min=296, y_max=303,
+        ) or doc.total_entered_value
         doc.invoice_number = invoice_number_for_2026_summary(fragments)
         invoice_page = len(reader.pages)
-        doc.invoice_value = money_at_box(
-            fragments, page=invoice_page, x_min=240, x_max=320, y_min=569, y_max=577,
+        invoice_value_fragment = amount_fragment_on_labeled_row(
+            fragments, page=invoice_page, label="Invoice Value USD",
         )
-        doc.invoice_entered_value = money_at_box(
-            fragments, page=invoice_page, x_min=240, x_max=320, y_min=557, y_max=565,
+        entered_value_fragment = amount_fragment_on_labeled_row(
+            fragments, page=invoice_page, label="Total Entered Value (Invoice)",
         )
+        doc.invoice_value = parse_money(invoice_value_fragment.text) if invoice_value_fragment else None
+        doc.invoice_entered_value = parse_money(entered_value_fragment.text) if entered_value_fragment else None
     notes = []
     if not doc.has_text_layer:
         notes.append("no readable text layer")
@@ -950,7 +982,10 @@ def parse_header_document(
     if doc.invoice_entered_value and doc.total_entered_value:
         total_value = parse_decimal(doc.total_entered_value)
         invoice_value = parse_decimal(doc.invoice_entered_value)
-        if total_value is not None and invoice_value is not None and total_value != invoice_value:
+        if (
+            total_value is not None and invoice_value is not None
+            and total_value != invoice_value and not is_2026_template
+        ):
             doc.total_entered_value = doc.invoice_entered_value
             notes.append("total entered value normalized from invoice totals")
     elif doc.invoice_entered_value and not doc.total_entered_value:
@@ -1218,6 +1253,9 @@ def parse_line_rows(
         if re.search(r"NOT\s*-?\s*RELATED", text, re.I):
             line.relationship = "N"
             text = normalize_spaces(re.sub(r"NOT\s*-?\s*RELATED", "", text, flags=re.I))
+
+        if text == line.line_no or (len(text) == 1 and row[0].x >= 400):
+            continue
 
         cleaned_description = re.sub(r"^\d{1,3}\s+", "", text)
         if cleaned_description:

@@ -42,7 +42,7 @@ TEMP_UPLOAD_SUFFIXES = {".pdf", ".xlsx"}
 PDF_COORDINATE_TOLERANCE = 0.5
 PDF_OVERLAY_BORDER_SAFE_GAP = 0.8
 TRANSPORT_MODES = {"auto", "air", "ocean"}
-APP_VERSION = "0.1.28"
+APP_VERSION = "0.1.29"
 WEIGHT_UNITS = {"KG", "KGS", "LB", "LBS", "G"}
 LINE_CALCULATION_FIELDS = ("hts", "net_quantity", "entered_value", "rate")
 
@@ -756,8 +756,6 @@ def document_replacement_targets(original_path: Path, document: Any) -> dict[str
             "duty_total": (document.duty_total, 500, 560, 284, 291, 1),
             "other_total": (document.other_total, 510, 560, 235, 242, 1),
             "grand_total": (document.grand_total, 495, 570, 211, 219, 1),
-            "invoice_value": (document.invoice_value, 245, 325, 569, 577, document.pages),
-            "invoice_entered_value": (document.invoice_entered_value, 245, 325, 557, 565, document.pages),
         }
         for name, (value, x_min, x_max, y_min, y_max, page) in boxes.items():
             target = amount_target_at_box(
@@ -766,6 +764,15 @@ def document_replacement_targets(original_path: Path, document: Any) -> dict[str
             )
             if target:
                 targets[name] = target
+        for name, label, value in (
+            ("invoice_value", "Invoice Value USD", document.invoice_value),
+            ("invoice_entered_value", "Total Entered Value (Invoice)", document.invoice_entered_value),
+        ):
+            fragment = parser.amount_fragment_on_labeled_row(
+                fragments, page=document.pages, label=label,
+            )
+            if fragment and values_equal(fragment.text, value):
+                targets[name] = amount_target_for_fragment(fragment, parser.parse_money(fragment.text))
         return targets
     target = amount_target_at_box(
         fragments,
@@ -2615,6 +2622,7 @@ def health() -> dict[str, str]:
         "manual_hmf_validation": "original-template-layout-enforced",
         "fee_summary_matching": "value-aware-flexible-decimals",
         "entry_summary_2026": "header-invoice-gross-weight-and-td-text-support",
+        "entry_summary_2026_invoice_rows": "label-anchored-with-distinct-invoice-and-entered-totals",
     }
 
 

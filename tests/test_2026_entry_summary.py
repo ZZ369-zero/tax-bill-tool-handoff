@@ -37,7 +37,9 @@ class EntrySummary2026Tests(unittest.TestCase):
             fragment(1, 304, 545, "1 RIDGEGATE DR STE 205"),
             fragment(1, 47, 421, "Invoice Number 001/01-272-76224492"),
             fragment(1, 120, 300, "$34.58"),
+            fragment(2, 47, 573, "Invoice Value USD"),
             fragment(2, 250, 573, "6,330.00"),
+            fragment(2, 47, 561, "Total Entered Value (Invoice)"),
             fragment(2, 250, 561, "6,330.00"),
         ]
 
@@ -52,6 +54,56 @@ class EntrySummary2026Tests(unittest.TestCase):
         self.assertEqual(doc.invoice_value, "6,330.00")
         self.assertEqual(doc.invoice_entered_value, "6,330.00")
         self.assertEqual(doc.importer_of_record, "JORWELL LLC 1 RIDGEGATE DR STE 205")
+
+    def test_shifted_invoice_rows_keep_rounded_block_39_total(self) -> None:
+        writer = PdfWriter()
+        writer.add_blank_page(width=595, height=842)
+        writer.add_blank_page(width=595, height=842)
+        buffer = BytesIO()
+        writer.write(buffer)
+        reader = PdfReader(BytesIO(buffer.getvalue()))
+        fragment = lambda page, x, y, text: parser.TextFragment(
+            page=page, x=x, y=y, size=9, font="Helvetica", text=text,
+        )
+        fragments = [
+            fragment(1, 424, 760, "Summary Status"),
+            fragment(1, 25, 312, "Other Fee Summary"),
+            fragment(1, 25, 20, "CBP Form 7501 (02/26)"),
+            fragment(1, 245, 299, "$3,778.00"),
+            fragment(1, 120, 300, "$34.58"),
+            fragment(2, 47, 561, "Invoice Value USD"),
+            fragment(2, 250, 561, "3,777.67"),
+            fragment(2, 47, 549, "Total Entered Value (Invoice)"),
+            fragment(2, 250, 549, "3,778.00"),
+        ]
+
+        doc = parser.parse_header_document(Path("sample.pdf"), "original", "x", reader, "", fragments)
+
+        self.assertEqual(doc.total_entered_value, "3,778.00")
+        self.assertEqual(doc.invoice_value, "3,777.67")
+        self.assertEqual(doc.invoice_entered_value, "3,778.00")
+
+    def test_vertical_cents_letters_are_not_product_description(self) -> None:
+        fragment = lambda x, y, text: parser.TextFragment(
+            page=1, x=x, y=y, size=9, font="Helvetica", text=text,
+        )
+        start = fragment(24, 409, "001")
+        rows = [
+            [start, fragment(47, 409, "PRDTS OF CHINA, NOTE 52")],
+            [fragment(437, 400, "e")],
+            [fragment(437, 391, "n")],
+            [fragment(437, 382, "t")],
+            [fragment(331, 385, "C1346")],
+            [fragment(437, 373, "s")],
+            [fragment(47, 373, "HOUSE SLIPPERS W/UP CONT>90%RU")],
+        ]
+
+        line = parser.parse_line_rows(Path("sample.pdf"), "original", "x", "entry", start, rows)
+
+        self.assertEqual(
+            line.description,
+            "PRDTS OF CHINA, NOTE 52 | C1346 | HOUSE SLIPPERS W/UP CONT>90%RU",
+        )
 
 
 if __name__ == "__main__":
